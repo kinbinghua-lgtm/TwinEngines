@@ -633,20 +633,11 @@ class LiveRunner:
             self._append_shadow_signal_jsonl(event)
         except Exception as e:
             logger.warning("shadow signal jsonl append failed: %s", e)
-        if self.cfg.dry_run_signals or bool(self.cfg.record_shadow_signals):
-            try:
-                self._simulate_order_from_signal(event)
-            except Exception as e:
-                logger.warning("simulate order failed: %s", e)
-            return
-        if self.poly_client is None:
-            return
-        if bool(self.cfg.runtime.dry_run) or not bool(self.cfg.runtime.enable_real_orders):
-            return
+        # 影子盘始终运行; 真实盘由 _simulate_order_from_signal 内部触发
         try:
-            self._submit_order_from_shadow_signal(event)
+            self._simulate_order_from_signal(event)
         except Exception as e:
-            logger.warning("submit from shadow signal failed: %s", e)
+            logger.warning("simulate order failed: %s", e)
 
     def _append_shadow_signal_jsonl(self, event: dict) -> None:
         path = self.cfg.shadow_signal_log_path
@@ -798,6 +789,21 @@ class LiveRunner:
 
         # 写入本次成交记录 (可能只是部分 fill)
         self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, single, "filled", "FILLED", d_abs)
+
+        # 真实盘: 同步提交 FOK 订单 (参数与影子盘完全一致)
+        if not self.cfg.dry_run_signals and not self.cfg.record_shadow_signals:
+            if self.poly_client and self.market_resolver and self.cfg.runtime.enable_real_orders:
+                try:
+                    active = self.market_resolver.get_active()
+                    if active:
+                        token_id = active.token_id_yes if best_dir == "up" else active.token_id_no
+                        side_label = "TREND" if not is_reversal else "REVERSAL"
+                        self.submit_signal_order(
+                            window_id=window_id, side=side_label, direction=best_dir,
+                            size_quote_usdc=single, limit_price=ask,
+                            note=f"ev={best_ev:.3f} kelly={kelly_total:.2f}")
+                except Exception as e:
+                    logger.warning("real order submit failed: %s", e)
 
         if _SIM_WIN_BUDGET[window_id] <= 0:
             _SIM_FILLED.add(window_id)
