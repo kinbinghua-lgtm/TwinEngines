@@ -345,8 +345,7 @@ class LiveRunner:
         self.reconciler.start()
 
         # 影子信号记录: 纯空跑 (--dry-run-signals) 或 实盘并存 (--record-shadow-signals)
-        if self.cfg.dry_run_signals or self.cfg.record_shadow_signals:
-            self._init_shadow_signal_engine()
+        self._init_shadow_signal_engine()  # 影子引擎始终启动 (真实盘也需要信号)
         if ok and not self.cfg.dry_run_signals:
             self._start_auto_redeem_worker()
 
