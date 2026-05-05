@@ -68,7 +68,7 @@ class BinanceFeedCfg:
     user_agent: str = "TwinEngines-Feed/1.0"
     request_timeout_sec: float = 5.0
     rest_poll_interval_sec: float = 1.0
-    stale_threshold_sec: float = 5.0
+    stale_threshold_sec: float = 2.0
     ws_reconnect_backoff_sec: tuple[float, float] = (1.0, 30.0)
     enable_rest_fallback: bool = True
     enable_ws: bool = True
