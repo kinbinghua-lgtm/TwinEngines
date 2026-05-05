@@ -784,28 +784,35 @@ class LiveRunner:
         single = min(remaining, max(depth_cap, 2.50))
         single = max(single, 2.50)  # 最低 $2.50
 
-        # 扣减预算
+        # 真实盘: 先提交 FOK, 被拒则跳过 (不扣预算, 等下一信号重试)
+        is_real_mode = (not self.cfg.dry_run_signals and not self.cfg.record_shadow_signals
+                        and self.poly_client and self.market_resolver
+                        and self.cfg.runtime.enable_real_orders)
+        if is_real_mode:
+            try:
+                active = self.market_resolver.get_active()
+                if active:
+                    token_id = active.token_id_yes if best_dir == "up" else active.token_id_no
+                    side_label = "TREND" if not is_reversal else "REVERSAL"
+                    limit_px = ask * 1.005 if ask > 0 else ask
+                    ticket = self.submit_signal_order(
+                        window_id=window_id, side=side_label, direction=best_dir,
+                        size_quote_usdc=single, limit_price=round(limit_px, 4),
+                        note=f"ev={best_ev:.3f} kelly={kelly_total:.2f}")
+                    filled_shares = float(getattr(ticket, 'filled_size_shares', 0) or 0)
+                    if filled_shares < 1e-9:
+                        # FOK 被拒 → 不扣预算, 等下一秒再试
+                        _SIM_CURRENT["status"] = "FOK_rejected"
+                        self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0,
+                                               "rejected", "FOK_depth_insufficient", d_abs)
+                        return
+            except Exception as e:
+                logger.warning("real order submit failed: %s", e)
+                return  # 下单异常也不扣预算
+
+        # 扣减预算 (影子盘直接扣; 真实盘通过 FOK 检查才到这里)
         _SIM_WIN_BUDGET[window_id] = remaining - single
-
-        # 写入本次成交记录 (可能只是部分 fill)
         self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, single, "filled", "FILLED", d_abs)
-
-        # 真实盘: 同步提交 FOK 订单 (参数与影子盘完全一致)
-        if not self.cfg.dry_run_signals and not self.cfg.record_shadow_signals:
-            if self.poly_client and self.market_resolver and self.cfg.runtime.enable_real_orders:
-                try:
-                    active = self.market_resolver.get_active()
-                    if active:
-                        token_id = active.token_id_yes if best_dir == "up" else active.token_id_no
-                        side_label = "TREND" if not is_reversal else "REVERSAL"
-                        # FOK 限价含滑点: ask + 0.5% = 可接受最高买入价
-                        limit_px = ask * 1.005 if ask > 0 else ask
-                        self.submit_signal_order(
-                            window_id=window_id, side=side_label, direction=best_dir,
-                            size_quote_usdc=single, limit_price=round(limit_px, 4),
-                            note=f"ev={best_ev:.3f} kelly={kelly_total:.2f}")
-                except Exception as e:
-                    logger.warning("real order submit failed: %s", e)
 
         if _SIM_WIN_BUDGET[window_id] <= 0:
             _SIM_FILLED.add(window_id)
