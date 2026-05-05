@@ -69,6 +69,7 @@ logger = get_logger(__name__)
 _SIM_FILLED: set[str] = set()        # 窗口已用完 Kelly 预算 (完全锁仓)
 _SIM_CURRENT: dict = {}
 _SIM_WIN_BUDGET: dict[str, float] = {}  # 每窗口剩余 Kelly 预算 (未用完可追单)
+_SIM_WIN_DIR: dict[str, str] = {}       # 每窗口首次成交方向 (反向信号触发锁仓)
 
 @dataclass
 class LiveRunnerCfg:
@@ -363,13 +364,48 @@ class LiveRunner:
 
     # ---------------- 主等待循环 ----------------
 
+    _monitor_positions: dict[str, dict] = field(default_factory=dict)  # 0.99 平仓追踪
+
     def _wait_loop(self) -> None:
         logger.info("LiveRunner main loop entered (sleep-based, decisions are event-driven via on_bar)")
         try:
             while not self._stopping.is_set():
                 time.sleep(1.0)
+                if self.poly_client and self.cfg.runtime.enable_real_orders:
+                    self._auto_settle_99_check()
         finally:
             self.stop()
+
+    def _auto_settle_99_check(self) -> None:
+        """0.99 平仓: 持仓 token best_bid >= 0.99 则卖出, 跳过赎回."""
+        if not self.market_resolver:
+            return
+        active = self.market_resolver.get_active()
+        if not active or not self._monitor_positions:
+            return
+        for window_id, pos in list(self._monitor_positions.items()):
+            token_id = pos.get("token_id")
+            if not token_id:
+                continue
+            try:
+                book = self.poly_client.fetch_book(token_id)
+                best_bid = float(book.get("best_bid") or 0)
+                if best_bid >= 0.99:
+                    size = float(book.get("best_bid_size") or 0)
+                    amount = pos.get("amount", 0)
+                    sell_sz = min(amount / best_bid, size) if best_bid > 0 else 0
+                    if sell_sz > 0:
+                        self.poly_client.place_order(
+                            token_id=token_id, side="sell", quantity=sell_sz,
+                            price=best_bid, order_type="FOK")
+                        logger.info("0.99 auto-settle: sold window=%s token=%s sz=%.2f bid=%.2f",
+                                    window_id, token_id, sell_sz, best_bid)
+                        self.store.append_audit("auto_settle_99", {
+                            "window_id": window_id, "token_id": token_id,
+                            "amount": amount, "bid": best_bid, "sold_sz": sell_sz})
+                    self._monitor_positions.pop(window_id, None)
+            except Exception:
+                pass
 
     def stop(self) -> None:
         self._stopping.set()
@@ -511,6 +547,7 @@ class LiveRunner:
         global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET
         _SIM_FILLED.discard(window_id)
         _SIM_WIN_BUDGET.pop(window_id, None)
+        _SIM_WIN_DIR.pop(window_id, None)
         _SIM_CURRENT.clear()
         try:
             import json as _j, urllib.request as _u, os as _o
@@ -614,7 +651,7 @@ class LiveRunner:
 
 
     def _simulate_order_from_signal(self, event: dict) -> None:
-        global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET
+        global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR
         window_id = str(event.get("window_id") or "")
         p_rev = float(event.get("p_rev_lower") or event.get("p_rev") or 0.3)
         t_rem = float(event.get("t_remaining_sec") or 0)
@@ -677,6 +714,15 @@ class LiveRunner:
         if window_id in _SIM_FILLED:
             _SIM_CURRENT["status"] = "filled"; return
 
+        # 反向信号锁仓: 已有仓位但新信号方向相反 → 立即锁仓
+        if window_id in _SIM_WIN_DIR and best_dir != _SIM_WIN_DIR[window_id]:
+            _SIM_FILLED.add(window_id)
+            _SIM_CURRENT["status"] = "locked_reverse"
+            _SIM_CURRENT["best_dir"] = best_dir
+            self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0,
+                                   "rejected", f"reverse_lock:{best_dir}vs{_SIM_WIN_DIR[window_id]}", d_abs)
+            return
+
         # 反转方向: d + p 双重过滤，被拒则记录
         is_reversal = (best_dir != event.get("trigger_direction", ""))
         reject_reason = ""
@@ -715,6 +761,7 @@ class LiveRunner:
                 self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0, "rejected", "Kelly<2.5", d_abs)
                 return
             _SIM_WIN_BUDGET[window_id] = kelly_total
+            _SIM_WIN_DIR[window_id] = best_dir
         else:
             kelly_total = _SIM_WIN_BUDGET[window_id]  # 保持不变
 
@@ -1115,6 +1162,14 @@ class LiveRunner:
                 "filled_shares": filled,
                 "timeout_streak": int(self._window_gtc_timeout_streak.get(window_id, 0)),
             })
+        # 注册 0.99 平仓监控 (仅实盘)
+        meta = self._open_gtc_orders.get(window_id)
+        if filled > 0 and meta and self.cfg.runtime.enable_real_orders:
+            self._monitor_positions[window_id] = {
+                "token_id": meta.get("token_id"),
+                "amount": filled,
+                "dir": meta.get("dir", ""),
+            }
 
     def _enqueue_redeem(self, market: ActiveMarket) -> None:
         with self._redeem_lock:
@@ -1473,6 +1528,7 @@ class LiveRunner:
                     "expire_ts_ms": expire_ts_ms,
                     "side": side,
                     "direction": direction,
+                    "dir": direction,
                     "note": note,
                     "token_id": token_id,
                 }
