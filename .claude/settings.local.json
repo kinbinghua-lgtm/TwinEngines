@@ -82,7 +82,9 @@
       "Bash(sshpass -p 'Jinbh1977' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 root@47.243.169.223 \"echo connected\")",
       "Bash(python -c \"import ast; ast.parse\\(open\\('src/twinengines/io/live_runner.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python)",
-      "Bash(git add *)"
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)"
     ]
   }
 }

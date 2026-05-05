@@ -66,8 +66,9 @@ from ..risk.sizing import SizingCfg, stake_for_trade
 logger = get_logger(__name__)
 
 # 模块级状态 (跨回调保持)
-_SIM_FILLED: set[str] = set()
+_SIM_FILLED: set[str] = set()        # 窗口已用完 Kelly 预算 (完全锁仓)
 _SIM_CURRENT: dict = {}
+_SIM_WIN_BUDGET: dict[str, float] = {}  # 每窗口剩余 Kelly 预算 (未用完可追单)
 
 @dataclass
 class LiveRunnerCfg:
@@ -507,8 +508,9 @@ class LiveRunner:
             return None
 
     def _on_shadow_window_close(self, window_id: str) -> None:
-        global _SIM_FILLED, _SIM_CURRENT
+        global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET
         _SIM_FILLED.discard(window_id)
+        _SIM_WIN_BUDGET.pop(window_id, None)
         _SIM_CURRENT.clear()
         try:
             import json as _j, urllib.request as _u, os as _o
@@ -518,8 +520,9 @@ class LiveRunner:
             if len(data) >= 5:
                 bl = float(data[0][1]); seq = "".join("1" if float(k[4]) > bl else "0" for k in data)
                 actual_dir = "up" if seq[4] == "1" else "down"
-                # 结算逻辑: 只取 status="filled" 的成交记录, 避免被后面 rejected 覆盖
-                best_dir = ""; fill_amt = 0.0; fill_ask = 0.0; fill_sec = 0
+                # 汇总本窗口所有 partial fills
+                best_dir = ""; total_fill = 0.0; total_pnl = 0.0; first_sec = 0
+                fills = []  # [(fill_amt, fill_ask)]
                 p = "/root/TwinEngines/logs/shadow_orders.jsonl"
                 if _o.path.exists(p):
                     for line in open(p).readlines()[-500:]:
@@ -529,26 +532,33 @@ class LiveRunner:
                             o = _j.loads(line.strip())
                             s = str(o.get("status") or "").lower()
                             if s == "filled" and o.get("fill_amount", 0) > 0:
-                                best_dir = o.get("best_dir", "")
-                                fill_amt = float(o.get("fill_amount") or 0)
-                                fill_sec = int(300 - float(o.get("T_remaining") or 0))
-                                # 从盘口价格反推买入价: best_dir=up → ask_up, down → ask_down
-                                if best_dir == "up":
-                                    fill_ask = float(o.get("ask_up") or 0)
+                                fa = float(o.get("fill_amount") or 0)
+                                if not best_dir:
+                                    best_dir = o.get("best_dir", "")
+                                    first_sec = int(300 - float(o.get("T_remaining") or 0))
+                                # 从盘口价格反推买入价
+                                if o.get("best_dir") == "up":
+                                    fask = float(o.get("ask_up") or 0)
                                 else:
-                                    fill_ask = float(o.get("ask_down") or 0)
+                                    fask = float(o.get("ask_down") or 0)
+                                fills.append((fa, fask))
                         except Exception:
                             pass
-                if not fill_amt:
-                    return  # 本窗没有成交单, 无需结算
-                won = actual_dir == best_dir if best_dir else False
-                if won and fill_ask > 0:
-                    pnl = fill_amt * (1.0 / fill_ask - 1.0)
-                elif won:
-                    pnl = fill_amt * 0.50
-                else:
-                    pnl = -fill_amt
-                # 从最近一条结算记录推算权益, 避免重启后内存变量归零
+                if not fills:
+                    return
+                # 汇总 PnL: 每笔 fill 独立计算盈亏（不同价位可能不同）
+                total_fill = sum(f[0] for f in fills)
+                for fa, fask in fills:
+                    won = actual_dir == best_dir if best_dir else False
+                    if won and fask > 0:
+                        total_pnl += fa * (1.0 / fask - 1.0)
+                    elif won:
+                        total_pnl += fa * 0.50
+                    else:
+                        total_pnl += -fa
+                # 加权平均买入价
+                avg_ask = sum(f[0] * f[1] for f in fills) / total_fill if total_fill > 0 else 0
+                # 从最近一条结算记录推算权益
                 last_eq = self._sim_equity
                 try:
                     p2 = "/root/TwinEngines/logs/window_results.jsonl"
@@ -559,13 +569,13 @@ class LiveRunner:
                             last_eq = float(last.get("equity") or last_eq)
                 except Exception:
                     pass
-                self._sim_equity = last_eq + pnl
+                self._sim_equity = last_eq + total_pnl
                 res = _j.dumps({
                     "window_id": window_id, "seq": seq, "dir": best_dir,
-                    "won": won, "pnl": round(pnl, 2),
+                    "won": won, "pnl": round(total_pnl, 2),
                     "equity": round(self._sim_equity, 2),
-                    "ask": round(fill_ask, 4), "fill_amt": round(fill_amt, 2),
-                    "fill_sec": fill_sec,
+                    "ask": round(avg_ask, 4), "fill_amt": round(total_fill, 2),
+                    "fill_sec": first_sec, "partials": len(fills),
                 })
                 open("/root/TwinEngines/logs/window_results.jsonl", "a").write(res + chr(10))
                 open("/root/TwinEngines/data_runtime/sim_equity.txt", "w").write(str(round(self._sim_equity, 2)) + chr(10))
@@ -604,7 +614,7 @@ class LiveRunner:
 
 
     def _simulate_order_from_signal(self, event: dict) -> None:
-        global _SIM_FILLED, _SIM_CURRENT
+        global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET
         window_id = str(event.get("window_id") or "")
         p_rev = float(event.get("p_rev_lower") or event.get("p_rev") or 0.3)
         t_rem = float(event.get("t_remaining_sec") or 0)
@@ -663,7 +673,7 @@ class LiveRunner:
         if best_dir is None:
             _SIM_CURRENT["status"] = "EV neg"; return
 
-        # 防止同窗重复下单
+        # 检查本窗是否还有剩余预算 (完全锁仓则跳过)
         if window_id in _SIM_FILLED:
             _SIM_CURRENT["status"] = "filled"; return
 
@@ -687,35 +697,58 @@ class LiveRunner:
             self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0, "rejected", f"EV<{ev_min}", d_abs)
             return
 
-        # Kelly sizing
-        try:
-            equity = self._sim_equity
-            sizing = SizingCfg(kelly_fraction=0.50, max_stake_ratio=0.30, min_absolute_stake=2.50)
-            ask = ask_up if best_dir == "up" else ask_down
-            wp = p_rev if is_reversal else (1 - p_rev)
-            b = (1 - ask) / ask if ask > 0 else 1
-            kelly_total = stake_for_trade(portfolio_equity=equity, win_prob=wp, net_payoff=b, cfg=sizing)
-        except:
-            kelly_total = 5.0
-        if kelly_total < 2.50:
-            _SIM_CURRENT["status"] = "Kelly<2.5"
-            _SIM_CURRENT["best_dir"] = best_dir
-            self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0, "rejected", "Kelly<2.5", d_abs)
-            return
-
-        # Fill!
+        # Kelly sizing — 首次信号计算总预算, 后续追单用剩余额度
+        global _SIM_WIN_BUDGET
         ask = ask_up if best_dir == "up" else ask_down
+        if window_id not in _SIM_WIN_BUDGET:
+            try:
+                equity = self._sim_equity
+                sizing = SizingCfg(kelly_fraction=0.50, max_stake_ratio=0.30, min_absolute_stake=2.50)
+                wp = p_rev if is_reversal else (1 - p_rev)
+                b = (1 - ask) / ask if ask > 0 else 1
+                kelly_total = stake_for_trade(portfolio_equity=equity, win_prob=wp, net_payoff=b, cfg=sizing)
+            except:
+                kelly_total = 5.0
+            if kelly_total < 2.50:
+                _SIM_CURRENT["status"] = "Kelly<2.5"
+                _SIM_CURRENT["best_dir"] = best_dir
+                self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0, "rejected", "Kelly<2.5", d_abs)
+                return
+            _SIM_WIN_BUDGET[window_id] = kelly_total
+        else:
+            kelly_total = _SIM_WIN_BUDGET[window_id]  # 保持不变
+
+        remaining = _SIM_WIN_BUDGET.get(window_id, 0)
+        if remaining <= 0:
+            _SIM_FILLED.add(window_id)
+            _SIM_CURRENT["status"] = "filled"; return
+
+        # FOK + 滑点: 用内置手续费中的滑点预算 (0.005) 作为可接受价差
         poly = event.get("polymarket") or {}
         ask_sz = float(poly.get("best_ask_size_up", 0)) if best_dir == "up" else float(poly.get("best_ask_size_dn", 0))
-        depth_cap = min(ask_sz * ask * 0.8, 200.0) if ask_sz > 0 and ask > 0 else 50.0
-        single = min(kelly_total, max(depth_cap, 2.50))
-        _SIM_FILLED.add(window_id)
-        _SIM_CURRENT["status"] = "FILLED"
+        slippage_budget = 0.005  # 来自 fee 公式: 0.005 * a * (1-a) * s
+        max_price = ask * (1.0 + slippage_budget) if ask > 0 else ask
+        depth_cap = min(ask_sz * max_price * 0.8, 200.0) if ask_sz > 0 and ask > 0 else 50.0
+        single = min(remaining, max(depth_cap, 2.50))
+        single = max(single, 2.50)  # 最低 $2.50
+
+        # 扣减预算
+        _SIM_WIN_BUDGET[window_id] = remaining - single
+
+        # 写入本次成交记录 (可能只是部分 fill)
+        self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, single, "filled", "FILLED", d_abs)
+
+        if _SIM_WIN_BUDGET[window_id] <= 0:
+            _SIM_FILLED.add(window_id)
+            _SIM_CURRENT["status"] = "FILLED"
+        else:
+            _SIM_CURRENT["status"] = f"part_fill"
         _SIM_CURRENT["best_dir"] = best_dir
         _SIM_CURRENT["fill_amt"] = round(single, 2)
         _SIM_CURRENT["fill_ask"] = round(ask, 4)
         _SIM_CURRENT["fill_ev"] = round(best_ev, 4)
-        self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, single, "filled", "FILLED", d_abs)
+        _SIM_CURRENT["budget_remain"] = round(_SIM_WIN_BUDGET.get(window_id, 0), 2)
+        _SIM_CURRENT["budget_total"] = round(kelly_total, 2)
 
     def _write_sim_record(self, wid, trig, p_adj, p_lower, t_rem, au, ad, best_dir, best_ev, fill_amt, status, reason, d_abs=0):
         try:
