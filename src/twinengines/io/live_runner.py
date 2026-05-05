@@ -757,17 +757,20 @@ class LiveRunner:
         if window_id not in _SIM_WIN_BUDGET:
             try:
                 equity = self._sim_equity
-                sizing = SizingCfg(kelly_fraction=0.50, max_stake_ratio=0.30, min_absolute_stake=2.50)
+                sizing = SizingCfg(kelly_fraction=0.25, max_stake_ratio=0.15, min_absolute_stake=2.50)
                 wp = p_rev if is_reversal else (1 - p_rev)
                 b = (1 - ask) / ask if ask > 0 else 1
                 kelly_total = stake_for_trade(portfolio_equity=equity, win_prob=wp, net_payoff=b, cfg=sizing)
             except:
                 kelly_total = 5.0
+            # Kelly 低于 $2.50 不拒绝, 按最低线执行 (受 15% 权益上限约束)
             if kelly_total < 2.50:
-                _SIM_CURRENT["status"] = "Kelly<2.5"
-                _SIM_CURRENT["best_dir"] = best_dir
-                self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0, "rejected", "Kelly<2.5", d_abs)
-                return
+                if equity * 0.15 < 2.50:
+                    _SIM_CURRENT["status"] = "Kelly<2.5"
+                    _SIM_CURRENT["best_dir"] = best_dir
+                    self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0, "rejected", "Kelly<2.5", d_abs)
+                    return
+                kelly_total = 2.50  # 权益够 → 按最低 $2.50 执行
             _SIM_WIN_BUDGET[window_id] = kelly_total
             _SIM_WIN_DIR[window_id] = best_dir
         else:
