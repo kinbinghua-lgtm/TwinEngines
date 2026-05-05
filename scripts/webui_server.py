@@ -16,6 +16,10 @@ app = Flask(__name__, static_folder=None)
 def index():
     return send_file(str(STATIC / "index.html"))
 
+@app.route("/real")
+def real_index():
+    return send_file(str(STATIC / "real.html"))
+
 @app.route("/static/<path:path>")
 def static_files(path):
     f = STATIC / path
@@ -82,6 +86,19 @@ def api_results():
                 try: items.append(json.loads(line.strip()))
                 except: pass
     return jsonify({"ok": True, "items": list(reversed(items))})
+
+@app.route("/api/real/balance")
+def api_real_balance():
+    try:
+        import sys, os
+        sys.path.insert(0, os.environ.get("TWINENGINES_ROOT", str(ROOT)))
+        from twinengines.io.live_runner import LiveRunner
+        runner = LiveRunner._last_instance if hasattr(LiveRunner, '_last_instance') else None
+        if runner and runner.poly_client:
+            bal = runner.poly_client.fetch_account_equity_usdc()
+            return jsonify({"ok": True, "balance_usdc": round(bal or 0, 2), "pending_redeem": 0, "redeem_ok": runner.poly_client.is_healthy()})
+    except: pass
+    return jsonify({"ok": False, "balance_usdc": 0, "pending_redeem": 0, "redeem_ok": False, "msg": "Shadow mode - no Poly client"})
 
 @app.route("/api/version")
 def api_version():

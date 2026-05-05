@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TwinEngines</title>
+<title>TwinEngines - Real</title>
 <link rel="stylesheet" href="/static/style.css">
 <style>
 .pos{color:#0f0}.neg{color:#f44}
@@ -15,47 +15,49 @@
 .signal-ok{color:#0f0}.signal-no{color:#f44}.signal-wait{color:#ff0}
 table{width:100%;border-collapse:collapse;font-size:12px}
 th,td{padding:3px 6px;text-align:left;border-bottom:1px solid #333}
-#version{font-size:10px;color:#555;text-align:right;margin-top:4px}
-</style>
-</head>
-<body>
-<style>
 .nav{display:flex;gap:0;margin-bottom:12px;border-bottom:2px solid #333}
 .nav a{padding:6px 16px;text-decoration:none;color:#888;font-size:14px;border-bottom:2px solid transparent;margin-bottom:-2px}
 .nav a.active{color:#fff;border-bottom-color:#0af}
 .nav a:hover{color:#ccc}
+#version{font-size:10px;color:#555;text-align:right;margin-top:4px}
 </style>
+</head>
+<body>
 <div style="max-width:800px;margin:16px auto">
 
   <div class="nav">
-    <a href="/real" class="active" id="nav-real">真实盘</a>
-    <a href="/" id="nav-shadow">影子盘</a>
+    <a href="/real" class="active">真实盘</a>
+    <a href="/">影子盘</a>
   </div>
 
   <div class="stat">
     <div class="stat-grid">
-      <div><label>时间</label><strong id="cw-wid">-</strong></div>
+      <div><label>Poly余额</label><strong id="ac-bal">-</strong></div>
+      <div><label>待赎回</label><strong id="ac-pend">-</strong></div>
+      <div><label>总权益</label><strong id="ac-eq">-</strong></div>
+      <div><label>赎回状态</label><strong id="ac-red">-</strong></div>
+    </div>
+  </div>
+
+  <div class="stat">
+    <div class="stat-grid">
       <div><label>序列</label><strong id="cw-seq">-</strong></div>
       <div><label>剩余</label><strong id="cw-T">-</strong></div>
+      <div><label>方向</label><strong id="cw-dir">-</strong></div>
       <div><label>状态</label><strong id="cw-status" class="signal-wait">等待...</strong></div>
-      <div><label>p_adj</label><strong id="cw-p">-</strong></div>
       <div><label>d%</label><strong id="cw-d">-</strong></div>
-      <div><label>CI下限</label><strong id="cw-pl">-</strong></div>
-      <div><label>ask_up</label><strong id="cw-au">-</strong></div>
-      <div><label>ask_dn</label><strong id="cw-ad">-</strong></div>
+      <div><label>p_lower</label><strong id="cw-pl">-</strong></div>
       <div><label>EV_rev</label><strong id="cw-evr">-</strong></div>
       <div><label>EV_trend</label><strong id="cw-evt">-</strong></div>
-      <div><label>方向</label><strong id="cw-dir">-</strong></div>
-      <div><label>当前权益</label><strong id="cw-eq">-</strong></div>
     </div>
   </div>
 
   <div class="stat" style="font-size:13px">
-    <span id="sum-text">等待数据...</span>
+    <span id="fill-info">等待窗口...</span>
   </div>
 
-  <div class="stat" style="font-size:13px;min-height:20px">
-    <span id="fill-info">等待窗口...</span>
+  <div class="stat" style="font-size:13px;background:#1a2a1f">
+    <span id="compare-text">影子对比: 等待数据...</span>
   </div>
 
   <h3 style="font-size:14px;margin:12px 0 4px">已结算成交 <span id="settled-page" style="font-weight:normal;font-size:12px;color:#888"></span></h3>
@@ -72,6 +74,6 @@ th,td{padding:3px 6px;text-align:left;border-bottom:1px solid #333}
 
   <div id="version">-</div>
 </div>
-<script src="/static/app.js"></script>
+<script src="/static/real.js"></script>
 </body>
 </html>
