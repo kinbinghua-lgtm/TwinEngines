@@ -757,7 +757,7 @@ class LiveRunner:
         if window_id not in _SIM_WIN_BUDGET:
             try:
                 equity = self._sim_equity
-                sizing = SizingCfg(kelly_fraction=0.25, max_stake_ratio=0.15, min_absolute_stake=2.50)
+                sizing = SizingCfg(kelly_fraction=0.30, max_stake_ratio=0.15, min_absolute_stake=2.50)
                 wp = p_rev if is_reversal else (1 - p_rev)
                 b = (1 - ask) / ask if ask > 0 else 1
                 kelly_total = stake_for_trade(portfolio_equity=equity, win_prob=wp, net_payoff=b, cfg=sizing)
