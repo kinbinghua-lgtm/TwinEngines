@@ -791,13 +791,6 @@ class LiveRunner:
                 kelly_total = stake_for_trade(portfolio_equity=equity, win_prob=wp, net_payoff=b, cfg=sizing)
             except:
                 kelly_total = 5.0
-            # Kelly < $1.00 直接拒 (EV 不达标, 不该下单)
-            # $1.00-2.50 区间: Kelly 正但太小, 抬到 $2.50 地板
-            if kelly_total < 1.00:
-                _SIM_CURRENT["status"] = "Kelly<1"
-                _SIM_CURRENT["best_dir"] = best_dir
-                self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0, "rejected", "Kelly<1", d_abs)
-                return
             if kelly_total < 2.50:
                 if equity * 0.15 < 2.50:
                     _SIM_CURRENT["status"] = "Kelly<2.5"
