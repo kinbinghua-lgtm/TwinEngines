@@ -798,9 +798,11 @@ class LiveRunner:
                     if active:
                         token_id = active.token_id_yes if best_dir == "up" else active.token_id_no
                         side_label = "TREND" if not is_reversal else "REVERSAL"
+                        # FOK 限价含滑点: ask + 0.5% = 可接受最高买入价
+                        limit_px = ask * 1.005 if ask > 0 else ask
                         self.submit_signal_order(
                             window_id=window_id, side=side_label, direction=best_dir,
-                            size_quote_usdc=single, limit_price=ask,
+                            size_quote_usdc=single, limit_price=round(limit_px, 4),
                             note=f"ev={best_ev:.3f} kelly={kelly_total:.2f}")
                 except Exception as e:
                     logger.warning("real order submit failed: %s", e)
@@ -836,56 +838,6 @@ class LiveRunner:
                 _f.write((_j.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8"))
         except: pass
 
-    def _submit_order_from_shadow_signal(self, event: dict) -> None:
-        window_id = str(event.get("window_id") or "")
-        p_rev = float(event.get("p_rev_lower") or event.get("p_rev") or 0.3)
-        t_rem = float(event.get("t_remaining_sec") or 0)
-        if not window_id or t_rem < 15:
-            return
-        ev_min = 0.05 if t_rem > 80 else (0.03 if t_rem > 30 else 0.02)
-        if not self.poly_client or not self.poly_client.is_healthy():
-            return
-        best_dir, best_ev, ask_up, ask_down = self._resolve_best_direction_by_ev(event, window_id)
-        if best_dir is None or best_ev < ev_min:
-            return
-        ask = ask_up if best_dir == "up" else ask_down
-        token_id = (self.market_resolver.get_active().token_id_yes if best_dir == "up"
-                    else self.market_resolver.get_active().token_id_no)
-        depth_book = self.poly_client.fetch_book(token_id)
-        ask_sz = float(depth_book.get("best_ask_size") or 0)
-        depth_cap = min(ask_sz * ask * 0.8, 200.0) if ask_sz > 0 and ask > 0 else 50.0
-        single = max(depth_cap, 2.50)
-        try:
-            t = self.submit_signal_order(
-                window_id=window_id,
-                side="TREND" if best_dir == event.get("trigger_direction") else "REVERSAL",
-                direction=best_dir, size_quote_usdc=single, limit_price=ask,
-                note=f"ev={best_ev:.3f}")
-        except Exception as e:
-            logger.warning("submit_order failed: %s", e)
-
-    @staticmethod
-    def _shadow_event_direction(event: dict) -> str:
-        poly = event.get("polymarket") or {}
-        m = poly.get("mapping") or {}
-        d = str(m.get("trade_direction") or "").lower()
-        if d in ("up", "down"):
-            return d
-        side = str(event.get("side") or "").upper()
-        td = str(event.get("trigger_direction") or "").lower()
-        if td not in ("up", "down"):
-            return ""
-        return td if side == "TREND" else ("down" if td == "up" else "up")
-
-    @staticmethod
-    def _shadow_event_limit_price(event: dict) -> float:
-        poly = event.get("polymarket") or {}
-        for q in [poly.get("trade_quote") or {}, poly.get("quote") or {}]:
-            for k in ("effective_price", "raw_price"):
-                v = q.get(k)
-                if isinstance(v, (int, float)) and 0.0 < float(v) < 1.0:
-                    return float(v)
-        return 0.5
 
     @staticmethod
     def _calc_ev(win_prob: float, ask: float) -> float:
@@ -907,7 +859,7 @@ class LiveRunner:
         ask_dn = float(book_dn.get("best_ask") or 0.99)
         if ask_up <= 0 or ask_up >= 1 or ask_dn <= 0 or ask_dn >= 1:
             return None, -1.0, ask_up, ask_dn
-        def fee(a, s=5.0): return 0.005 * a * (1-a) * s + 0.10 + 0.002 * s
+        def fee(a, s=5.0): return 0.018 * a * s + 0.10 + 0.002 * s
         def ev(wp, a, s=5.0): return s * (wp / a - 1.0) - fee(a, s)
         if trig_dir == "up":
             ev_rev = ev(p_rev, ask_dn)
