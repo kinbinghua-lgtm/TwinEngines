@@ -101,7 +101,7 @@ class PolymarketRuntimeCfg:
     # 信号入场: 略跨 best_ask + 先 FOK 吃单 + 未成交再 GTC（Polymarket 常见提高成交率做法）
     entry_buy_cross_ticks: int = 2                 # 在 best_ask 上抬几个最小报价 tick（默认 0.01）
     entry_exec_fok_first: bool = True              # 先下 FOK（全成或取消）
-    entry_fok_fallback_gtc: bool = True            # FOK 未成则再挂 GTC 同价排队
+    entry_fok_fallback_gtc: bool = False           # FOK 未成直接取消 (不转 GTC)
     # GTC 限价单: 等待成交的最长时间 (秒), 与窗口结束时刻取较早者触发撤单
     gtc_max_wait_sec: float = 5.0
     # 成交回报后二次确认订单状态 (毫秒), 缓解幽灵成交
