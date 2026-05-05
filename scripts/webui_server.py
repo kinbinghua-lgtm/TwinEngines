@@ -78,7 +78,7 @@ def api_results():
     items = []
     if p.exists():
         with open(p, encoding="utf-8") as f:
-            for line in f.readlines()[-50:]:
+            for line in f.readlines()[-200:]:
                 try: items.append(json.loads(line.strip()))
                 except: pass
     return jsonify({"ok": True, "items": list(reversed(items))})
