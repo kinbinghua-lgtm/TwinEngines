@@ -780,11 +780,7 @@ class LiveRunner:
         ask = ask_up if best_dir == "up" else ask_down
         if window_id not in win_budget:
             try:
-                # 真实盘用 Polymarket 实际余额, 影子盘用模拟权益
-                if is_real_mode and self.poly_client:
-                    equity = self.poly_client.fetch_account_equity_usdc() or self._sim_equity
-                else:
-                    equity = self._sim_equity
+                equity = self._sim_equity  # 统一用模拟权益 (真实盘余额由 Polymarket 下单时校验)
                 sizing = SizingCfg(kelly_fraction=0.30, max_stake_ratio=0.15, min_absolute_stake=2.50)
                 wp = p_rev if is_reversal else (1 - p_rev)
                 b = (1 - ask) / ask if ask > 0 else 1
