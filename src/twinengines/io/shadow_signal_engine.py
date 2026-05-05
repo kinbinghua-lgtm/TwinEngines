@@ -227,15 +227,22 @@ class ShadowSignalEngine:
             if st.baseline_price is None:
                 offset_sec = (bar.close_time_ms - st.start_ts_ms) / 1000.0
                 if offset_sec > self.cfg.max_baseline_offset_sec:
-                    st.skipped = True
-                    self._windows_skipped_late_start += 1
-                    self._emit_audit("shadow_window_skipped_late_start", {
-                        "window_id": st.window_id,
-                        "first_bar_offset_sec": round(offset_sec, 2),
-                        "max_allowed_sec": self.cfg.max_baseline_offset_sec,
-                    })
-                    return
-                st.baseline_price = float(bar.open)
+                    # 晚启动: 尝试从 REST 回补分钟数据, 避免跳窗
+                    if self._backfill_window_from_rest(st):
+                        # 回补成功: 已设置 baseline + minute_closes, 可能已触发
+                        logger.info("ShadowSignalEngine backfilled window %s (offset=%.1fs)",
+                                    st.window_id, offset_sec)
+                    else:
+                        st.skipped = True
+                        self._windows_skipped_late_start += 1
+                        self._emit_audit("shadow_window_skipped_late_start", {
+                            "window_id": st.window_id,
+                            "first_bar_offset_sec": round(offset_sec, 2),
+                            "max_allowed_sec": self.cfg.max_baseline_offset_sec,
+                        })
+                        return
+                if st.baseline_price is None:
+                    st.baseline_price = float(bar.open)
 
             # 维护 1m close 桶 (按 close_time_ms 落入第几个 1min)
             self._maybe_record_minute_close(st, bar)
@@ -292,6 +299,31 @@ class ShadowSignalEngine:
             return
         if minute_idx >= len(st.minute_closes) and minute_idx < 4:
             st.minute_closes.append(float(bar.close))
+
+    def _backfill_window_from_rest(self, st: _WindowState) -> bool:
+        """晚启动时从 Binance REST 回补当前窗口的分钟数据, 返回是否成功."""
+        try:
+            import json as _json, urllib.request as _ureq
+            url = (f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT"
+                   f"&interval=1m&startTime={st.start_ts_ms}&limit=4")
+            data = _json.loads(_ureq.urlopen(
+                _ureq.Request(url, headers={"User-Agent": "TE/1.0"}), timeout=5).read())
+            if not isinstance(data, list) or len(data) < 1:
+                return False
+            # baseline = 第一个可用的 1 分钟 K 线 open
+            st.baseline_price = float(data[0][1])
+            # 记录已完成的分钟 close (最多前 3 分钟)
+            for k in data[:3]:
+                st.minute_closes.append(float(k[4]))
+            # 如果前 3 分钟已齐, 立即判定触发
+            if len(st.minute_closes) >= TRIGGER_AT_MIN:
+                self._evaluate_trigger(st)
+                if st.triggered:
+                    self._windows_triggered += 1
+            return True
+        except Exception as e:
+            logger.warning("ShadowSignalEngine backfill REST failed: %s", e)
+            return False
 
     def _evaluate_trigger(self, st: _WindowState) -> None:
         if len(st.minute_closes) < TRIGGER_AT_MIN or st.baseline_price is None:
