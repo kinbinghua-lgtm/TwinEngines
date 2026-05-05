@@ -68,8 +68,10 @@ logger = get_logger(__name__)
 # 模块级状态 (跨回调保持)
 _SIM_FILLED: set[str] = set()        # 窗口已用完 Kelly 预算 (完全锁仓)
 _SIM_CURRENT: dict = {}
-_SIM_WIN_BUDGET: dict[str, float] = {}  # 每窗口剩余 Kelly 预算 (未用完可追单)
-_SIM_WIN_DIR: dict[str, str] = {}       # 每窗口首次成交方向 (反向信号触发锁仓)
+_SIM_WIN_BUDGET: dict[str, float] = {}  # 影子盘每窗口剩余 Kelly 预算
+_SIM_WIN_DIR: dict[str, str] = {}       # 影子盘每窗口首次成交方向
+_REAL_WIN_BUDGET: dict[str, float] = {} # 真实盘每窗口剩余 Kelly 预算 (独立于影子)
+_REAL_WIN_DIR: dict[str, str] = {}      # 真实盘每窗口首次成交方向
 
 @dataclass
 class LiveRunnerCfg:
@@ -544,10 +546,12 @@ class LiveRunner:
             return None
 
     def _on_shadow_window_close(self, window_id: str) -> None:
-        global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET
+        global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR, _REAL_WIN_BUDGET, _REAL_WIN_DIR
         _SIM_FILLED.discard(window_id)
         _SIM_WIN_BUDGET.pop(window_id, None)
         _SIM_WIN_DIR.pop(window_id, None)
+        _REAL_WIN_BUDGET.pop(window_id, None)
+        _REAL_WIN_DIR.pop(window_id, None)
         _SIM_CURRENT.clear()
         try:
             import json as _j, urllib.request as _u, os as _o
@@ -650,8 +654,14 @@ class LiveRunner:
 
 
     def _simulate_order_from_signal(self, event: dict) -> None:
-        global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR
+        global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR, _REAL_WIN_BUDGET, _REAL_WIN_DIR
         window_id = str(event.get("window_id") or "")
+        # 影子/真实盘各自独立的预算和方向
+        is_real_mode = (not self.cfg.dry_run_signals and not self.cfg.record_shadow_signals
+                        and self.poly_client and self.market_resolver
+                        and self.cfg.runtime.enable_real_orders)
+        win_budget = _REAL_WIN_BUDGET if is_real_mode else _SIM_WIN_BUDGET
+        win_dir = _REAL_WIN_DIR if is_real_mode else _SIM_WIN_DIR
         p_rev = float(event.get("p_rev_lower") or event.get("p_rev") or 0.3)
         t_rem = float(event.get("t_remaining_sec") or 0)
         trig = event.get("trigger_pattern", "")
@@ -717,12 +727,12 @@ class LiveRunner:
             _SIM_CURRENT["status"] = "filled"; return
 
         # 反向信号锁仓: 已有仓位但新信号方向相反 → 立即锁仓
-        if window_id in _SIM_WIN_DIR and best_dir != _SIM_WIN_DIR[window_id]:
+        if window_id in win_dir and best_dir != win_dir[window_id]:
             _SIM_FILLED.add(window_id)
             _SIM_CURRENT["status"] = "locked_reverse"
             _SIM_CURRENT["best_dir"] = best_dir
             self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0,
-                                   "rejected", f"reverse_lock:{best_dir}vs{_SIM_WIN_DIR[window_id]}", d_abs)
+                                   "rejected", f"reverse_lock:{best_dir}vs{win_dir[window_id]}", d_abs)
             return
 
         # 反转方向: d + p 双重过滤，被拒则记录
@@ -746,11 +756,14 @@ class LiveRunner:
             return
 
         # Kelly sizing — 首次信号计算总预算, 后续追单用剩余额度
-        global _SIM_WIN_BUDGET
         ask = ask_up if best_dir == "up" else ask_down
-        if window_id not in _SIM_WIN_BUDGET:
+        if window_id not in win_budget:
             try:
-                equity = self._sim_equity
+                # 真实盘用 Polymarket 实际余额, 影子盘用模拟权益
+                if is_real_mode and self.poly_client:
+                    equity = self.poly_client.fetch_account_equity_usdc() or self._sim_equity
+                else:
+                    equity = self._sim_equity
                 sizing = SizingCfg(kelly_fraction=0.30, max_stake_ratio=0.15, min_absolute_stake=2.50)
                 wp = p_rev if is_reversal else (1 - p_rev)
                 b = (1 - ask) / ask if ask > 0 else 1
@@ -765,12 +778,12 @@ class LiveRunner:
                     self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0, "rejected", "Kelly<2.5", d_abs)
                     return
                 kelly_total = 2.50  # 权益够 → 按最低 $2.50 执行
-            _SIM_WIN_BUDGET[window_id] = kelly_total
-            _SIM_WIN_DIR[window_id] = best_dir
+            win_budget[window_id] = kelly_total
+            win_dir[window_id] = best_dir
         else:
-            kelly_total = _SIM_WIN_BUDGET[window_id]  # 保持不变
+            kelly_total = win_budget[window_id]  # 保持不变
 
-        remaining = _SIM_WIN_BUDGET.get(window_id, 0)
+        remaining = win_budget.get(window_id, 0)
         if remaining <= 0:
             _SIM_FILLED.add(window_id)
             _SIM_CURRENT["status"] = "filled"; return
@@ -811,10 +824,10 @@ class LiveRunner:
                 return  # 下单异常也不扣预算
 
         # 扣减预算 (影子盘直接扣; 真实盘通过 FOK 检查才到这里)
-        _SIM_WIN_BUDGET[window_id] = remaining - single
+        win_budget[window_id] = remaining - single
         self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, single, "filled", "FILLED", d_abs)
 
-        if _SIM_WIN_BUDGET[window_id] <= 0:
+        if win_budget[window_id] <= 0:
             _SIM_FILLED.add(window_id)
             _SIM_CURRENT["status"] = "FILLED"
         else:
@@ -823,7 +836,7 @@ class LiveRunner:
         _SIM_CURRENT["fill_amt"] = round(single, 2)
         _SIM_CURRENT["fill_ask"] = round(ask, 4)
         _SIM_CURRENT["fill_ev"] = round(best_ev, 4)
-        _SIM_CURRENT["budget_remain"] = round(_SIM_WIN_BUDGET.get(window_id, 0), 2)
+        _SIM_CURRENT["budget_remain"] = round(win_budget.get(window_id, 0), 2)
         _SIM_CURRENT["budget_total"] = round(kelly_total, 2)
 
     def _write_sim_record(self, wid, trig, p_adj, p_lower, t_rem, au, ad, best_dir, best_ev, fill_amt, status, reason, d_abs=0):
