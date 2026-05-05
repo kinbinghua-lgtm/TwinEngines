@@ -66,7 +66,8 @@ from ..risk.sizing import SizingCfg, stake_for_trade
 logger = get_logger(__name__)
 
 # 模块级状态 (跨回调保持)
-_SIM_FILLED: set[str] = set()        # 窗口已用完 Kelly 预算 (完全锁仓)
+_SIM_FILLED: set[str] = set()        # 影子盘窗口锁仓
+_REAL_FILLED: set[str] = set()       # 真实盘窗口锁仓 (独立于影子)
 _SIM_CURRENT: dict = {}
 _SIM_WIN_BUDGET: dict[str, float] = {}  # 影子盘每窗口剩余 Kelly 预算
 _SIM_WIN_DIR: dict[str, str] = {}       # 影子盘每窗口首次成交方向
@@ -546,8 +547,9 @@ class LiveRunner:
             return None
 
     def _on_shadow_window_close(self, window_id: str) -> None:
-        global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR, _REAL_WIN_BUDGET, _REAL_WIN_DIR
+        global _SIM_FILLED, _REAL_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR, _REAL_WIN_BUDGET, _REAL_WIN_DIR
         _SIM_FILLED.discard(window_id)
+        _REAL_FILLED.discard(window_id)
         _SIM_WIN_BUDGET.pop(window_id, None)
         _SIM_WIN_DIR.pop(window_id, None)
         _REAL_WIN_BUDGET.pop(window_id, None)
@@ -654,12 +656,14 @@ class LiveRunner:
 
 
     def _simulate_order_from_signal(self, event: dict) -> None:
-        global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR, _REAL_WIN_BUDGET, _REAL_WIN_DIR
+        global _SIM_FILLED, _REAL_FILLED, _SIM_CURRENT
+        global _SIM_WIN_BUDGET, _SIM_WIN_DIR, _REAL_WIN_BUDGET, _REAL_WIN_DIR
         window_id = str(event.get("window_id") or "")
-        # 影子/真实盘各自独立的预算和方向
+        # 影子/真实盘各自独立的锁仓/预算/方向
         is_real_mode = (not self.cfg.dry_run_signals and not self.cfg.record_shadow_signals
                         and self.poly_client and self.market_resolver
                         and self.cfg.runtime.enable_real_orders)
+        filled_set = _REAL_FILLED if is_real_mode else _SIM_FILLED
         win_budget = _REAL_WIN_BUDGET if is_real_mode else _SIM_WIN_BUDGET
         win_dir = _REAL_WIN_DIR if is_real_mode else _SIM_WIN_DIR
         p_rev = float(event.get("p_rev_lower") or event.get("p_rev") or 0.3)
@@ -723,12 +727,12 @@ class LiveRunner:
             _SIM_CURRENT["status"] = "EV neg"; return
 
         # 检查本窗是否还有剩余预算 (完全锁仓则跳过)
-        if window_id in _SIM_FILLED:
+        if window_id in filled_set:
             _SIM_CURRENT["status"] = "filled"; return
 
         # 反向信号锁仓: 已有仓位但新信号方向相反 → 立即锁仓
         if window_id in win_dir and best_dir != win_dir[window_id]:
-            _SIM_FILLED.add(window_id)
+            filled_set.add(window_id)
             _SIM_CURRENT["status"] = "locked_reverse"
             _SIM_CURRENT["best_dir"] = best_dir
             self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0,
@@ -785,7 +789,7 @@ class LiveRunner:
 
         remaining = win_budget.get(window_id, 0)
         if remaining <= 0:
-            _SIM_FILLED.add(window_id)
+            filled_set.add(window_id)
             _SIM_CURRENT["status"] = "filled"; return
 
         # FOK + 滑点: 用内置手续费中的滑点预算 (0.005) 作为可接受价差
@@ -798,9 +802,6 @@ class LiveRunner:
         single = max(single, 2.50)  # 最低 $2.50
 
         # 真实盘: 先提交 FOK, 被拒则跳过 (不扣预算, 等下一信号重试)
-        is_real_mode = (not self.cfg.dry_run_signals and not self.cfg.record_shadow_signals
-                        and self.poly_client and self.market_resolver
-                        and self.cfg.runtime.enable_real_orders)
         if is_real_mode:
             try:
                 active = self.market_resolver.get_active()
@@ -828,7 +829,7 @@ class LiveRunner:
         self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, single, "filled", "FILLED", d_abs)
 
         if win_budget[window_id] <= 0:
-            _SIM_FILLED.add(window_id)
+            filled_set.add(window_id)
             _SIM_CURRENT["status"] = "FILLED"
         else:
             _SIM_CURRENT["status"] = f"part_fill"

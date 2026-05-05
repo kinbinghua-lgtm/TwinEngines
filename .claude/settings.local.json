@@ -88,7 +88,8 @@
       "Bash(python -c \"import ast; ast.parse\\(open\\('E:/TwinEngines/src/twinengines/io/live_runner.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "WebSearch",
       "Bash(python -c \"import ast; ast.parse\\(open\\('src/twinengines/io/binance_feed.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(python -c \"import ast; ast.parse\\(open\\('src/twinengines/io/config.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")"
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/twinengines/io/config.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c ' *)"
     ]
   }
 }
