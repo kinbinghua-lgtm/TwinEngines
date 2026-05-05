@@ -695,9 +695,6 @@ class LiveRunner:
 
         if not window_id or t_rem < 5:
             _SIM_CURRENT["status"] = "T<5s"; return
-        # 最小成交时间: 185s 后才下单 (让概率估计更准确)
-        if t_rem > 115:  # 300-185=115
-            _SIM_CURRENT["status"] = "T>185s"; return
 
         # 预填两个方向的 EV
         try:
