@@ -376,6 +376,7 @@ class LiveRunner:
                 time.sleep(1.0)
                 if self.poly_client and self.cfg.runtime.enable_real_orders:
                     self._auto_settle_99_check()
+                    self._write_real_balance()
         finally:
             self.stop()
 
@@ -409,6 +410,25 @@ class LiveRunner:
                     self._monitor_positions.pop(window_id, None)
             except Exception:
                 pass
+
+    _balance_last_write: float = 0
+
+    def _write_real_balance(self) -> None:
+        """每秒写一次 Polymarket 余额到文件 (供 WebUI 读取)."""
+        now = time.time()
+        if now - self._balance_last_write < 5.0:
+            return
+        self._balance_last_write = now
+        try:
+            import json, os
+            bal = self.poly_client.fetch_account_equity_usdc() or 0
+            data = {"ok": True, "balance_usdc": round(bal, 2),
+                    "pending_redeem": 0, "redeem_ok": self.poly_client.is_healthy()}
+            os.makedirs("/root/TwinEngines/data_runtime", exist_ok=True)
+            open("/root/TwinEngines/data_runtime/real_balance.json", "w").write(
+                json.dumps(data))
+        except Exception:
+            pass
 
     def stop(self) -> None:
         self._stopping.set()
