@@ -32,3 +32,4 @@ data_runtime/
 reports/
 *.jsonl
 data_runtime/
+.claude/settings.local.json
