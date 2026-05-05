@@ -83,24 +83,21 @@ async function loadAll() {
       }
     }
 
-    // === Settled results (from shadow data, same source) ===
+    // === Real account data ===
     var sr = await fetch('/api/summary').then(r => r.json());
-    var rr = await fetch('/api/results').then(r => r.json());
-    var items = rr.items || [];
 
+    // 真实盘暂不显示影子结算 (等产生真实成交后再启用)
+    var stb = document.getElementById('settled-body');
+    stb.innerHTML = '<tr><td colspan="8" style="color:#555;text-align:center">等待真实盘产生成交...</td></tr>';
+    document.getElementById('settled-page').textContent = '';
+    document.getElementById('settled-home').style.display = 'none';
+    document.getElementById('settled-prev').style.display = 'none';
+    document.getElementById('settled-next').style.display = 'none';
+    document.getElementById('settled-last').style.display = 'none';
+
+    // Skip results fetch (not needed on real page yet)
     var filledOnly = [];
     var wins = 0, totalPnl = 0;
-    for (var i = 0; i < items.length; i++) {
-      if (items[i].won) wins++;
-      totalPnl += (items[i].pnl || 0);
-      if (items[i].dir) filledOnly.push(items[i]);
-    }
-
-    // Settled table
-    window._settledAll = filledOnly;
-    window._settledPerPage = 10;
-    if (window._settledPage == null) window._settledPage = 0;
-    renderSettledPage();
 
     // Real account summary
     var realBal = document.getElementById('ac-bal');
