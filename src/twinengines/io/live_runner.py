@@ -358,6 +358,7 @@ class LiveRunner:
         self._start_order_watch_worker()
 
         self._started = True
+        LiveRunner._last_instance = self  # WebUI 余额查询
         logger.info("===== LiveRunner started =====")
 
         if run_forever:
