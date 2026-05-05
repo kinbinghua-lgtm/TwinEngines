@@ -614,7 +614,15 @@ class LiveRunner:
                     "ask": round(avg_ask, 4), "fill_amt": round(total_fill, 2),
                     "fill_sec": first_sec, "partials": len(fills),
                 })
-                open("/root/TwinEngines/logs/window_results.jsonl", "a").write(res + chr(10))
+                # 确保文件尾有换行符, 防止 JSON 粘连
+                with open("/root/TwinEngines/logs/window_results.jsonl", "ab+") as _f:
+                    _f.seek(0, 2)  # SEEK_END
+                    pos = _f.tell()
+                    if pos > 0:
+                        _f.seek(pos - 1)
+                        if _f.read(1) != b"\n":
+                            _f.write(b"\n")
+                    _f.write((res + "\n").encode("utf-8"))
                 open("/root/TwinEngines/data_runtime/sim_equity.txt", "w").write(str(round(self._sim_equity, 2)) + chr(10))
         except Exception:
             pass
@@ -808,8 +816,12 @@ class LiveRunner:
                    "fill_amount": round(fill_amt,2),
                    "d_abs_pct": round(d_abs,4),
                    "ts_ms": int(__import__("time").time() * 1000)}
-            with open("logs/shadow_orders.jsonl", "a", encoding="utf-8") as _f:
-                _f.write(_j.dumps(rec, ensure_ascii=False) + "\n")
+            with open("logs/shadow_orders.jsonl", "ab+") as _f:
+                _f.seek(0, 2); pos = _f.tell()
+                if pos > 0:
+                    _f.seek(pos - 1)
+                    if _f.read(1) != b"\n": _f.write(b"\n")
+                _f.write((_j.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8"))
         except: pass
 
     def _submit_order_from_shadow_signal(self, event: dict) -> None:
