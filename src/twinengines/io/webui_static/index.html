@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TwinEngines</title>
+<link rel="stylesheet" href="/static/style.css">
+<style>
+.pos{color:#0f0}.neg{color:#f44}
+.stat{font-size:12px;padding:8px;background:#1a1f2a;border-radius:6px;margin-bottom:8px}
+.stat-grid{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:4px}
+.stat-grid div{padding:2px}
+.stat-grid label{color:#888;font-size:10px;display:block}
+.stat-grid strong{font-size:13px}
+.signal-ok{color:#0f0}.signal-no{color:#f44}.signal-wait{color:#ff0}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{padding:3px 6px;text-align:left;border-bottom:1px solid #333}
+#version{font-size:10px;color:#555;text-align:right;margin-top:4px}
+</style>
+</head>
+<body>
+<div style="max-width:800px;margin:16px auto">
+
+  <h1 style="font-size:18px;margin:0 0 8px">TwinEngines</h1>
+
+  <div class="stat">
+    <div class="stat-grid">
+      <div><label>时间</label><strong id="cw-wid">-</strong></div>
+      <div><label>序列</label><strong id="cw-seq">-</strong></div>
+      <div><label>剩余</label><strong id="cw-T">-</strong></div>
+      <div><label>状态</label><strong id="cw-status" class="signal-wait">等待...</strong></div>
+      <div><label>p_adj</label><strong id="cw-p">-</strong></div>
+      <div><label>d%</label><strong id="cw-d">-</strong></div>
+      <div><label>CI下限</label><strong id="cw-pl">-</strong></div>
+      <div><label>ask_up</label><strong id="cw-au">-</strong></div>
+      <div><label>ask_dn</label><strong id="cw-ad">-</strong></div>
+      <div><label>EV_rev</label><strong id="cw-evr">-</strong></div>
+      <div><label>EV_trend</label><strong id="cw-evt">-</strong></div>
+      <div><label>方向</label><strong id="cw-dir">-</strong></div>
+      <div><label>当前权益</label><strong id="cw-eq">-</strong></div>
+    </div>
+  </div>
+
+  <div class="stat" style="font-size:13px">
+    <span id="sum-text">等待数据...</span>
+  </div>
+
+  <div class="stat" style="font-size:13px;min-height:20px">
+    <span id="fill-info">等待窗口...</span>
+  </div>
+
+  <h3 style="font-size:14px;margin:12px 0 4px">已结算成交 <span id="settled-page" style="font-weight:normal;font-size:12px;color:#888"></span></h3>
+  <table>
+    <thead><tr><th>时间</th><th>前3位</th><th>全5位</th><th>秒</th><th>方向</th><th>金额</th><th>盈亏</th><th>权益</th></tr></thead>
+    <tbody id="settled-body"></tbody>
+  </table>
+  <div id="settled-nav" style="text-align:center;margin:6px 0">
+    <button id="settled-home" style="padding:2px 12px;cursor:pointer;display:none" onclick="settledPage(-99)">首页</button>
+    <button id="settled-prev" style="padding:2px 12px;cursor:pointer;display:none" onclick="settledPage(-1)">上一页</button>
+    <button id="settled-next" style="padding:2px 12px;cursor:pointer;display:none" onclick="settledPage(1)">下一页</button>
+    <button id="settled-last" style="padding:2px 12px;cursor:pointer;display:none" onclick="settledPage(99)">末页</button>
+  </div>
+
+  <div id="version">-</div>
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

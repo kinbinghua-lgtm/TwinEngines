@@ -1,0 +1,88 @@
+[
+  {
+    "endpoint": "/markets",
+    "status": 200,
+    "success": true,
+    "data_type": "dict",
+    "keys": [
+      "data",
+      "next_cursor",
+      "limit",
+      "count"
+    ]
+  },
+  {
+    "endpoint": "/sampling-markets",
+    "status": 200,
+    "success": true,
+    "data_type": "dict",
+    "keys": [
+      "data",
+      "next_cursor",
+      "limit",
+      "count"
+    ]
+  },
+  {
+    "endpoint": "/sampling-simplified-markets",
+    "status": 200,
+    "success": true,
+    "data_type": "dict",
+    "keys": [
+      "data",
+      "next_cursor",
+      "limit",
+      "count"
+    ]
+  },
+  {
+    "endpoint": "/trades",
+    "status": 401,
+    "success": false
+  },
+  {
+    "endpoint": "/candles",
+    "status": 404,
+    "success": false
+  },
+  {
+    "endpoint": "/history",
+    "status": 404,
+    "success": false
+  },
+  {
+    "endpoint": "/orderbook/history",
+    "status": 404,
+    "success": false
+  },
+  {
+    "endpoint": "/market/history",
+    "status": 404,
+    "success": false
+  },
+  {
+    "endpoint": "/data/trades",
+    "status": 401,
+    "success": false
+  },
+  {
+    "endpoint": "/data/candles",
+    "status": 404,
+    "success": false
+  },
+  {
+    "endpoint": "/prices",
+    "status": 400,
+    "success": false
+  },
+  {
+    "endpoint": "/volumes",
+    "status": 404,
+    "success": false
+  },
+  {
+    "endpoint": "/snapshots",
+    "status": 404,
+    "success": false
+  }
+]

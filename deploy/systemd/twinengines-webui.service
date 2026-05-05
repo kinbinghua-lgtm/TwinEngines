@@ -1,0 +1,19 @@
+[Unit]
+Description=TwinEngines WebUI (Flask)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/TwinEngines
+Environment=PYTHONPATH=/root/TwinEngines/src
+# 登录密码与远程面板一致；敏感环境请改为 EnvironmentFile=/root/TwinEngines/.env.webui 并用 ExecStart 引用变量
+ExecStart=/root/TwinEngines/.venv/bin/python -m twinengines.cli webui --host 0.0.0.0 --port 8080 --password Jinbh1977 --project-root /root/TwinEngines --env-file /root/TwinEngines/.env
+Restart=always
+RestartSec=15
+StandardOutput=append:/root/TwinEngines/logs/webui.log
+StandardError=append:/root/TwinEngines/logs/webui.log
+
+[Install]
+WantedBy=multi-user.target

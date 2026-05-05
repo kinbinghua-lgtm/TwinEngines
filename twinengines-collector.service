@@ -1,0 +1,17 @@
+[Unit]
+Description=TwinEngines Shadow Signal Collector
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/TwinEngines
+Environment="PATH=/root/TwinEngines/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/root/TwinEngines/.venv/bin/python -m twinengines.cli live-run --dry-run-signals --artifact reports/prefix_survival_model_90d_step10.json
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/TwinEngines/logs/collector_stdout.log
+StandardError=append:/root/TwinEngines/logs/collector_stderr.log
+
+[Install]
+WantedBy=multi-user.target

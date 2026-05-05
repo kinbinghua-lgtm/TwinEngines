@@ -1,0 +1,594 @@
+{
+  "task": "early_prior_next_window",
+  "features": [
+    "prev_return_5m",
+    "prev_return_last_60s",
+    "prev_return_last_30s",
+    "prev_range_pct",
+    "prev_realized_vol_1s",
+    "prev_close_pos",
+    "prev_reversed",
+    "prev_final_abs_pct",
+    "prev_volume_ratio",
+    "prev_last60_volume_share",
+    "hour_sin",
+    "hour_cos"
+  ],
+  "train_calendar_days": 28,
+  "validation_calendar_days_each": [
+    3,
+    3
+  ],
+  "n_pairs_total": 9791,
+  "n_pairs_train": 8064,
+  "n_pairs_valid_per_segment": [
+    864,
+    863
+  ],
+  "fit": {
+    "l2": 3.0,
+    "success": true,
+    "message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+    "intercept": 0.02633659269266042,
+    "coef_standardized": {
+      "prev_return_5m": -0.025254610318211718,
+      "prev_return_last_60s": -0.021166591401891123,
+      "prev_return_last_30s": -0.05359920660074988,
+      "prev_range_pct": -0.07511225332205605,
+      "prev_realized_vol_1s": -0.009329237029015029,
+      "prev_close_pos": -0.04413436739695493,
+      "prev_reversed": 0.015013693646547862,
+      "prev_final_abs_pct": 0.042544910291254824,
+      "prev_volume_ratio": 0.07328716226077957,
+      "prev_last60_volume_share": -0.011726564089015429,
+      "hour_sin": -0.03641324371841454,
+      "hour_cos": -0.01993923268757372
+    }
+  },
+  "train_metrics": {
+    "n": 8064,
+    "up_rate": 0.5065724206349206,
+    "accuracy": 0.5269097222222222,
+    "logloss": 0.6908373509273279,
+    "brier": 0.24885453898723264,
+    "auc": 0.5364946261631214,
+    "mean_p": 0.506571135484674,
+    "accuracy_majority": 0.5065724206349206,
+    "accuracy_prev_direction_persistence": 0.48759920634920634
+  },
+  "validation_segments": [
+    {
+      "segment": 0,
+      "n": 864,
+      "up_rate": 0.49421296296296297,
+      "accuracy": 0.5046296296296297,
+      "logloss": 0.6933160224416979,
+      "brier": 0.2501350691584008,
+      "auc": 0.5059619826472811,
+      "mean_p": 0.5145355830694057,
+      "accuracy_majority_train_rate": 0.49421296296296297,
+      "accuracy_prev_direction_persistence": 0.4849537037037037,
+      "calibration_bins_p_up": [
+        {
+          "lo": 0,
+          "hi": 0.45,
+          "n": 4,
+          "mean_p": 0.3681818404927118,
+          "actual_up_rate": 0.25
+        },
+        {
+          "lo": 0.45,
+          "hi": 0.48,
+          "n": 79,
+          "mean_p": 0.47045479771774584,
+          "actual_up_rate": 0.4936708860759494
+        },
+        {
+          "lo": 0.48,
+          "hi": 0.5,
+          "n": 192,
+          "mean_p": 0.4911750920839328,
+          "actual_up_rate": 0.484375
+        },
+        {
+          "lo": 0.5,
+          "hi": 0.52,
+          "n": 234,
+          "mean_p": 0.5101551825388329,
+          "actual_up_rate": 0.5128205128205128
+        },
+        {
+          "lo": 0.52,
+          "hi": 0.55,
+          "n": 278,
+          "mean_p": 0.5329361209078712,
+          "actual_up_rate": 0.4712230215827338
+        },
+        {
+          "lo": 0.55,
+          "hi": 0.58,
+          "n": 58,
+          "mean_p": 0.5628012520657568,
+          "actual_up_rate": 0.5172413793103449
+        },
+        {
+          "lo": 0.58,
+          "hi": 0.62,
+          "n": 17,
+          "mean_p": 0.5956099061744847,
+          "actual_up_rate": 0.6470588235294118
+        },
+        {
+          "lo": 0.62,
+          "hi": 0.66,
+          "n": 1,
+          "mean_p": 0.6285591395343424,
+          "actual_up_rate": 1.0
+        },
+        {
+          "lo": 0.66,
+          "hi": 1,
+          "n": 1,
+          "mean_p": 0.6855152193891558,
+          "actual_up_rate": 1.0
+        }
+      ],
+      "pick_probability_bins": [
+        {
+          "lo": 0.5,
+          "hi": 0.52,
+          "n": 426,
+          "mean_pick_prob": 0.5095556221454737,
+          "realized_pick_win_rate": 0.5140845070422535
+        },
+        {
+          "lo": 0.52,
+          "hi": 0.54,
+          "n": 279,
+          "mean_pick_prob": 0.5286857166182469,
+          "realized_pick_win_rate": 0.4838709677419355
+        },
+        {
+          "lo": 0.54,
+          "hi": 0.56,
+          "n": 106,
+          "mean_pick_prob": 0.54750895650321,
+          "realized_pick_win_rate": 0.4811320754716981
+        },
+        {
+          "lo": 0.56,
+          "hi": 0.58,
+          "n": 33,
+          "mean_pick_prob": 0.5689626373571571,
+          "realized_pick_win_rate": 0.5151515151515151
+        },
+        {
+          "lo": 0.58,
+          "hi": 0.6,
+          "n": 14,
+          "mean_pick_prob": 0.5908025439500509,
+          "realized_pick_win_rate": 0.7142857142857143
+        },
+        {
+          "lo": 0.6,
+          "hi": 0.62,
+          "n": 3,
+          "mean_pick_prob": 0.6180442632218425,
+          "realized_pick_win_rate": 0.3333333333333333
+        },
+        {
+          "lo": 0.62,
+          "hi": 0.66,
+          "n": 1,
+          "mean_pick_prob": 0.6285591395343424,
+          "realized_pick_win_rate": 1.0
+        },
+        {
+          "lo": 0.66,
+          "hi": 1,
+          "n": 2,
+          "mean_pick_prob": 0.7652708556505946,
+          "realized_pick_win_rate": 1.0
+        }
+      ],
+      "hypothetical_edge_if_ask_fixed": [
+        {
+          "ask": 0.35,
+          "edge_min": 0.06,
+          "n": 864,
+          "coverage": 1.0,
+          "realized_win_rate": 0.5046296296296297,
+          "avg_pnl_per_share": 0.15462962962962964
+        },
+        {
+          "ask": 0.4,
+          "edge_min": 0.06,
+          "n": 864,
+          "coverage": 1.0,
+          "realized_win_rate": 0.5046296296296297,
+          "avg_pnl_per_share": 0.10462962962962964
+        },
+        {
+          "ask": 0.45,
+          "edge_min": 0.06,
+          "n": 639,
+          "coverage": 0.7395833333333334,
+          "realized_win_rate": 0.5039123630672926,
+          "avg_pnl_per_share": 0.05391236306729266
+        },
+        {
+          "ask": 0.47,
+          "edge_min": 0.06,
+          "n": 264,
+          "coverage": 0.3055555555555556,
+          "realized_win_rate": 0.5,
+          "avg_pnl_per_share": 0.030000000000000044
+        },
+        {
+          "ask": 0.49,
+          "edge_min": 0.06,
+          "n": 81,
+          "coverage": 0.09375,
+          "realized_win_rate": 0.5679012345679012,
+          "avg_pnl_per_share": 0.07790123456790124
+        }
+      ]
+    },
+    {
+      "segment": 1,
+      "n": 863,
+      "up_rate": 0.5052143684820394,
+      "accuracy": 0.4982618771726535,
+      "logloss": 0.6956877232515375,
+      "brier": 0.25127619537552837,
+      "auc": 0.4905947188621275,
+      "mean_p": 0.5118123888908349,
+      "accuracy_majority_train_rate": 0.5052143684820394,
+      "accuracy_prev_direction_persistence": 0.5121668597914253,
+      "calibration_bins_p_up": [
+        {
+          "lo": 0,
+          "hi": 0.45,
+          "n": 12,
+          "mean_p": 0.4318251783705,
+          "actual_up_rate": 0.5
+        },
+        {
+          "lo": 0.45,
+          "hi": 0.48,
+          "n": 115,
+          "mean_p": 0.46928832579128466,
+          "actual_up_rate": 0.45217391304347826
+        },
+        {
+          "lo": 0.48,
+          "hi": 0.5,
+          "n": 191,
+          "mean_p": 0.49043028927642157,
+          "actual_up_rate": 0.5445026178010471
+        },
+        {
+          "lo": 0.5,
+          "hi": 0.52,
+          "n": 218,
+          "mean_p": 0.5090131351702218,
+          "actual_up_rate": 0.5275229357798165
+        },
+        {
+          "lo": 0.52,
+          "hi": 0.55,
+          "n": 235,
+          "mean_p": 0.5328101176224358,
+          "actual_up_rate": 0.4851063829787234
+        },
+        {
+          "lo": 0.55,
+          "hi": 0.58,
+          "n": 71,
+          "mean_p": 0.5611944800085577,
+          "actual_up_rate": 0.4788732394366197
+        },
+        {
+          "lo": 0.58,
+          "hi": 0.62,
+          "n": 16,
+          "mean_p": 0.5957702370657489,
+          "actual_up_rate": 0.4375
+        },
+        {
+          "lo": 0.62,
+          "hi": 0.66,
+          "n": 3,
+          "mean_p": 0.6242401481499892,
+          "actual_up_rate": 0.6666666666666666
+        },
+        {
+          "lo": 0.66,
+          "hi": 1,
+          "n": 2,
+          "mean_p": 0.7233766640299566,
+          "actual_up_rate": 1.0
+        }
+      ],
+      "pick_probability_bins": [
+        {
+          "lo": 0.5,
+          "hi": 0.52,
+          "n": 409,
+          "mean_pick_prob": 0.5092730518711781,
+          "realized_pick_win_rate": 0.4938875305623472
+        },
+        {
+          "lo": 0.52,
+          "hi": 0.54,
+          "n": 274,
+          "mean_pick_prob": 0.5287675356988183,
+          "realized_pick_win_rate": 0.5328467153284672
+        },
+        {
+          "lo": 0.54,
+          "hi": 0.56,
+          "n": 121,
+          "mean_pick_prob": 0.5480415540465707,
+          "realized_pick_win_rate": 0.4049586776859504
+        },
+        {
+          "lo": 0.56,
+          "hi": 0.58,
+          "n": 37,
+          "mean_pick_prob": 0.5681735454486584,
+          "realized_pick_win_rate": 0.5945945945945946
+        },
+        {
+          "lo": 0.58,
+          "hi": 0.6,
+          "n": 10,
+          "mean_pick_prob": 0.587244210623229,
+          "realized_pick_win_rate": 0.4
+        },
+        {
+          "lo": 0.6,
+          "hi": 0.62,
+          "n": 6,
+          "mean_pick_prob": 0.6099802811366154,
+          "realized_pick_win_rate": 0.5
+        },
+        {
+          "lo": 0.62,
+          "hi": 0.66,
+          "n": 3,
+          "mean_pick_prob": 0.6242401481499892,
+          "realized_pick_win_rate": 0.6666666666666666
+        },
+        {
+          "lo": 0.66,
+          "hi": 1,
+          "n": 3,
+          "mean_pick_prob": 0.7113751469281718,
+          "realized_pick_win_rate": 0.6666666666666666
+        }
+      ],
+      "hypothetical_edge_if_ask_fixed": [
+        {
+          "ask": 0.35,
+          "edge_min": 0.06,
+          "n": 863,
+          "coverage": 1.0,
+          "realized_win_rate": 0.4982618771726535,
+          "avg_pnl_per_share": 0.14826187717265352
+        },
+        {
+          "ask": 0.4,
+          "edge_min": 0.06,
+          "n": 863,
+          "coverage": 1.0,
+          "realized_win_rate": 0.4982618771726535,
+          "avg_pnl_per_share": 0.09826187717265354
+        },
+        {
+          "ask": 0.45,
+          "edge_min": 0.06,
+          "n": 639,
+          "coverage": 0.7404403244495944,
+          "realized_win_rate": 0.5007824726134585,
+          "avg_pnl_per_share": 0.05078247261345856
+        },
+        {
+          "ask": 0.47,
+          "edge_min": 0.06,
+          "n": 288,
+          "coverage": 0.33371958285052145,
+          "realized_win_rate": 0.4965277777777778,
+          "avg_pnl_per_share": 0.02652777777777782
+        },
+        {
+          "ask": 0.49,
+          "edge_min": 0.06,
+          "n": 104,
+          "coverage": 0.1205098493626883,
+          "realized_win_rate": 0.49038461538461536,
+          "avg_pnl_per_share": 0.0003846153846153935
+        }
+      ]
+    }
+  ],
+  "validation_combined": {
+    "n": 1727,
+    "up_rate": 0.49971048060220036,
+    "accuracy": 0.5014475969889982,
+    "logloss": 0.6945011861932274,
+    "brier": 0.25070530188878937,
+    "auc": 0.49757655250847604,
+    "mean_p": 0.5131747743976589,
+    "calibration_bins_p_up": [
+      {
+        "lo": 0,
+        "hi": 0.45,
+        "n": 16,
+        "mean_p": 0.4159143439010529,
+        "actual_up_rate": 0.4375
+      },
+      {
+        "lo": 0.45,
+        "hi": 0.48,
+        "n": 194,
+        "mean_p": 0.46976333240051377,
+        "actual_up_rate": 0.4690721649484536
+      },
+      {
+        "lo": 0.48,
+        "hi": 0.5,
+        "n": 383,
+        "mean_p": 0.49080366300760214,
+        "actual_up_rate": 0.5143603133159269
+      },
+      {
+        "lo": 0.5,
+        "hi": 0.52,
+        "n": 452,
+        "mean_p": 0.5096043720822904,
+        "actual_up_rate": 0.5199115044247787
+      },
+      {
+        "lo": 0.52,
+        "hi": 0.55,
+        "n": 513,
+        "mean_p": 0.5328784001046015,
+        "actual_up_rate": 0.4775828460038986
+      },
+      {
+        "lo": 0.55,
+        "hi": 0.58,
+        "n": 129,
+        "mean_p": 0.5619169046544303,
+        "actual_up_rate": 0.49612403100775193
+      },
+      {
+        "lo": 0.58,
+        "hi": 0.62,
+        "n": 33,
+        "mean_p": 0.5956876423641886,
+        "actual_up_rate": 0.5454545454545454
+      },
+      {
+        "lo": 0.62,
+        "hi": 0.66,
+        "n": 4,
+        "mean_p": 0.6253198959960775,
+        "actual_up_rate": 0.75
+      },
+      {
+        "lo": 0.66,
+        "hi": 1,
+        "n": 3,
+        "mean_p": 0.710756182483023,
+        "actual_up_rate": 1.0
+      }
+    ],
+    "pick_probability_bins": [
+      {
+        "lo": 0.5,
+        "hi": 0.52,
+        "n": 835,
+        "mean_pick_prob": 0.509417213472196,
+        "realized_pick_win_rate": 0.5041916167664671
+      },
+      {
+        "lo": 0.52,
+        "hi": 0.54,
+        "n": 553,
+        "mean_pick_prob": 0.5287262562711882,
+        "realized_pick_win_rate": 0.5081374321880651
+      },
+      {
+        "lo": 0.54,
+        "hi": 0.56,
+        "n": 227,
+        "mean_pick_prob": 0.5477928521100234,
+        "realized_pick_win_rate": 0.44052863436123346
+      },
+      {
+        "lo": 0.56,
+        "hi": 0.58,
+        "n": 70,
+        "mean_pick_prob": 0.5685455459198079,
+        "realized_pick_win_rate": 0.5571428571428572
+      },
+      {
+        "lo": 0.58,
+        "hi": 0.6,
+        "n": 24,
+        "mean_pick_prob": 0.5893199050638751,
+        "realized_pick_win_rate": 0.5833333333333334
+      },
+      {
+        "lo": 0.6,
+        "hi": 0.62,
+        "n": 9,
+        "mean_pick_prob": 0.6126682751650245,
+        "realized_pick_win_rate": 0.4444444444444444
+      },
+      {
+        "lo": 0.62,
+        "hi": 0.66,
+        "n": 4,
+        "mean_pick_prob": 0.6253198959960775,
+        "realized_pick_win_rate": 0.75
+      },
+      {
+        "lo": 0.66,
+        "hi": 1,
+        "n": 5,
+        "mean_pick_prob": 0.732933430417141,
+        "realized_pick_win_rate": 0.8
+      }
+    ],
+    "hypothetical_edge_if_ask_fixed": [
+      {
+        "ask": 0.35,
+        "edge_min": 0.06,
+        "n": 1727,
+        "coverage": 1.0,
+        "realized_win_rate": 0.5014475969889982,
+        "avg_pnl_per_share": 0.15144759698899823
+      },
+      {
+        "ask": 0.4,
+        "edge_min": 0.06,
+        "n": 1727,
+        "coverage": 1.0,
+        "realized_win_rate": 0.5014475969889982,
+        "avg_pnl_per_share": 0.10144759698899826
+      },
+      {
+        "ask": 0.45,
+        "edge_min": 0.06,
+        "n": 1278,
+        "coverage": 0.740011580775912,
+        "realized_win_rate": 0.5023474178403756,
+        "avg_pnl_per_share": 0.05234741784037562
+      },
+      {
+        "ask": 0.47,
+        "edge_min": 0.06,
+        "n": 552,
+        "coverage": 0.31962941517081644,
+        "realized_win_rate": 0.49818840579710144,
+        "avg_pnl_per_share": 0.028188405797101485
+      },
+      {
+        "ask": 0.49,
+        "edge_min": 0.06,
+        "n": 185,
+        "coverage": 0.10712217718587146,
+        "realized_win_rate": 0.5243243243243243,
+        "avg_pnl_per_share": 0.034324324324324335
+      }
+    ]
+  },
+  "notes": [
+    "Binance-only direction validation; real viability needs Polymarket early-book shadowing.",
+    "hypothetical fixed-ask PnL is not a fill simulation.",
+    "No absolute BTC price is used."
+  ]
+}

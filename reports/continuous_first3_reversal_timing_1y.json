@@ -1,0 +1,167 @@
+{
+  "n_windows": 105120,
+  "focus_sequences": [
+    {
+      "sequence": "00011",
+      "n": 3093,
+      "pct_total": 0.02942351598173516,
+      "switches": 1
+    },
+    {
+      "sequence": "00010",
+      "n": 1040,
+      "pct_total": 0.00989345509893455,
+      "switches": 2
+    },
+    {
+      "sequence": "11110",
+      "n": 2827,
+      "pct_total": 0.026893074581430747,
+      "switches": 1
+    },
+    {
+      "sequence": "11100",
+      "n": 2856,
+      "pct_total": 0.0271689497716895,
+      "switches": 1
+    },
+    {
+      "sequence": "11101",
+      "n": 1048,
+      "pct_total": 0.009969558599695586,
+      "switches": 2
+    },
+    {
+      "sequence": "00001",
+      "n": 3063,
+      "pct_total": 0.029138127853881278,
+      "switches": 1
+    },
+    {
+      "sequence": "11111",
+      "n": 26525,
+      "pct_total": 0.2523306697108067,
+      "switches": 0
+    },
+    {
+      "sequence": "00000",
+      "n": 28154,
+      "pct_total": 0.26782724505327243,
+      "switches": 0
+    }
+  ],
+  "reversal_timing_patterns": [
+    {
+      "name": "000_to_up_at_4th_then_hold_00011",
+      "sequence": "00011",
+      "n": 3093,
+      "pct_total": 0.02942351598173516,
+      "switches": 1
+    },
+    {
+      "name": "000_to_up_at_4th_then_fail_00010",
+      "sequence": "00010",
+      "n": 1040,
+      "pct_total": 0.00989345509893455,
+      "switches": 2
+    },
+    {
+      "name": "000_to_up_only_at_5th_00001",
+      "sequence": "00001",
+      "n": 3063,
+      "pct_total": 0.029138127853881278,
+      "switches": 1
+    },
+    {
+      "name": "111_to_down_at_4th_then_hold_11100",
+      "sequence": "11100",
+      "n": 2856,
+      "pct_total": 0.0271689497716895,
+      "switches": 1
+    },
+    {
+      "name": "111_to_down_at_4th_then_fail_11101",
+      "sequence": "11101",
+      "n": 1048,
+      "pct_total": 0.009969558599695586,
+      "switches": 2
+    },
+    {
+      "name": "111_to_down_only_at_5th_11110",
+      "sequence": "11110",
+      "n": 2827,
+      "pct_total": 0.026893074581430747,
+      "switches": 1
+    }
+  ],
+  "first3_continuous_reversal_timing": [
+    {
+      "first3": "000",
+      "direction": "up_after_000",
+      "n_first3": 35350,
+      "n_final_flip": 6156,
+      "p_final_flip_given_first3": 0.17414427157001414,
+      "n_flip_seen_at_4_and_final_flip": 3093,
+      "p_of_first3": 0.0874964639321075,
+      "p_of_final_flips": 0.5024366471734892,
+      "n_flip_only_at_5": 3063,
+      "p_of_first3_only_at_5": 0.08664780763790665,
+      "p_of_final_flips_only_at_5": 0.4975633528265107,
+      "n_4th_flip_then_fail_by_5": 1040,
+      "p_4th_flip_then_fail_given_first3": 0.02942008486562942
+    },
+    {
+      "first3": "111",
+      "direction": "down_after_111",
+      "n_first3": 33256,
+      "n_final_flip": 5683,
+      "p_final_flip_given_first3": 0.17088645657926388,
+      "n_flip_seen_at_4_and_final_flip": 2856,
+      "p_of_first3": 0.0858792398364205,
+      "p_of_final_flips": 0.5025514692943868,
+      "n_flip_only_at_5": 2827,
+      "p_of_first3_only_at_5": 0.0850072167428434,
+      "p_of_final_flips_only_at_5": 0.49744853070561323,
+      "n_4th_flip_then_fail_by_5": 1048,
+      "p_4th_flip_then_fail_given_first3": 0.0315131104161655
+    }
+  ],
+  "prefix4_continuation": [
+    {
+      "prefix4": "0001",
+      "n": 4133,
+      "final_dist": {
+        "00010": 1040,
+        "00011": 3093
+      },
+      "p_final_up": 0.7483668037744979
+    },
+    {
+      "prefix4": "1110",
+      "n": 3904,
+      "final_dist": {
+        "11100": 2856,
+        "11101": 1048
+      },
+      "p_final_up": 0.26844262295081966
+    },
+    {
+      "prefix4": "0000",
+      "n": 31217,
+      "final_dist": {
+        "00000": 28154,
+        "00001": 3063
+      },
+      "p_final_up": 0.09811961431271422
+    },
+    {
+      "prefix4": "1111",
+      "n": 29352,
+      "final_dist": {
+        "11110": 2827,
+        "11111": 26525
+      },
+      "p_final_up": 0.9036862905423821
+    }
+  ]
+}

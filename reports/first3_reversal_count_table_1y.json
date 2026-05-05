@@ -1,0 +1,223 @@
+{
+  "n_windows": 105120,
+  "first3_reversal_table": [
+    {
+      "first3": "000",
+      "n": 35350,
+      "first3_switches": 0,
+      "bit3": "0",
+      "p_continue_bit3_to_final": 0.8258557284299859,
+      "p_flip_after_bit3": 0.17414427157001414,
+      "p_full_switch_ge2": 0.02942008486562942,
+      "p_full_switch_ge3": 0.0,
+      "full_switch_dist": {
+        "0": 28154,
+        "1": 6156,
+        "2": 1040
+      },
+      "tail2_dist": {
+        "00": 28154,
+        "01": 3063,
+        "10": 1040,
+        "11": 3093
+      }
+    },
+    {
+      "first3": "111",
+      "n": 33256,
+      "first3_switches": 0,
+      "bit3": "1",
+      "p_continue_bit3_to_final": 0.8291135434207362,
+      "p_flip_after_bit3": 0.17088645657926388,
+      "p_full_switch_ge2": 0.0315131104161655,
+      "p_full_switch_ge3": 0.0,
+      "full_switch_dist": {
+        "0": 26525,
+        "1": 5683,
+        "2": 1048
+      },
+      "tail2_dist": {
+        "00": 2856,
+        "01": 1048,
+        "10": 2827,
+        "11": 26525
+      }
+    },
+    {
+      "first3": "001",
+      "n": 6529,
+      "first3_switches": 1,
+      "bit3": "1",
+      "p_continue_bit3_to_final": 0.6875478633787716,
+      "p_flip_after_bit3": 0.3124521366212284,
+      "p_full_switch_ge2": 0.37295144738857405,
+      "p_full_switch_ge3": 0.06049931076734569,
+      "full_switch_dist": {
+        "1": 4094,
+        "2": 2040,
+        "3": 395
+      },
+      "tail2_dist": {
+        "00": 1201,
+        "01": 395,
+        "10": 839,
+        "11": 4094
+      }
+    },
+    {
+      "first3": "011",
+      "n": 9436,
+      "first3_switches": 1,
+      "bit3": "1",
+      "p_continue_bit3_to_final": 0.7754345061466723,
+      "p_flip_after_bit3": 0.2245654938533277,
+      "p_full_switch_ge2": 0.26345909283594743,
+      "p_full_switch_ge3": 0.03889359898261975,
+      "full_switch_dist": {
+        "1": 6950,
+        "2": 2119,
+        "3": 367
+      },
+      "tail2_dist": {
+        "00": 1110,
+        "01": 367,
+        "10": 1009,
+        "11": 6950
+      }
+    },
+    {
+      "first3": "100",
+      "n": 8770,
+      "first3_switches": 1,
+      "bit3": "0",
+      "p_continue_bit3_to_final": 0.76442417331813,
+      "p_flip_after_bit3": 0.23557582668187002,
+      "p_full_switch_ge2": 0.27639680729760546,
+      "p_full_switch_ge3": 0.04082098061573546,
+      "full_switch_dist": {
+        "1": 6346,
+        "2": 2066,
+        "3": 358
+      },
+      "tail2_dist": {
+        "00": 6346,
+        "01": 1006,
+        "10": 358,
+        "11": 1060
+      }
+    },
+    {
+      "first3": "110",
+      "n": 5952,
+      "first3_switches": 1,
+      "bit3": "0",
+      "p_continue_bit3_to_final": 0.6863239247311828,
+      "p_flip_after_bit3": 0.3136760752688172,
+      "p_full_switch_ge2": 0.3785282258064516,
+      "p_full_switch_ge3": 0.0648521505376344,
+      "full_switch_dist": {
+        "1": 3699,
+        "2": 1867,
+        "3": 386
+      },
+      "tail2_dist": {
+        "00": 3699,
+        "01": 756,
+        "10": 386,
+        "11": 1111
+      }
+    },
+    {
+      "first3": "010",
+      "n": 2982,
+      "first3_switches": 2,
+      "bit3": "0",
+      "p_continue_bit3_to_final": 0.6830985915492958,
+      "p_flip_after_bit3": 0.31690140845070425,
+      "p_full_switch_ge2": 1.0,
+      "p_full_switch_ge3": 0.3796109993293092,
+      "full_switch_dist": {
+        "2": 1850,
+        "3": 945,
+        "4": 187
+      },
+      "tail2_dist": {
+        "00": 1850,
+        "01": 377,
+        "10": 187,
+        "11": 568
+      }
+    },
+    {
+      "first3": "101",
+      "n": 2845,
+      "first3_switches": 2,
+      "bit3": "1",
+      "p_continue_bit3_to_final": 0.6942003514938488,
+      "p_flip_after_bit3": 0.30579964850615116,
+      "p_full_switch_ge2": 1.0,
+      "p_full_switch_ge3": 0.3669595782073814,
+      "full_switch_dist": {
+        "2": 1801,
+        "3": 870,
+        "4": 174
+      },
+      "tail2_dist": {
+        "00": 511,
+        "01": 174,
+        "10": 359,
+        "11": 1801
+      }
+    }
+  ],
+  "class_summary": [
+    {
+      "class": "continuous_000_111",
+      "first3s": [
+        "000",
+        "111"
+      ],
+      "n": 68606,
+      "p_continue_bit3_to_final": 0.8274349182287264,
+      "p_flip_after_bit3": 0.17256508177127364,
+      "p_full_switch_ge2": 0.030434655861003412,
+      "p_full_switch_ge3": 0.0
+    },
+    {
+      "class": "one_switch_reversal_then_continue_011_100",
+      "first3s": [
+        "011",
+        "100"
+      ],
+      "n": 18206,
+      "p_continue_bit3_to_final": 0.7701307261342415,
+      "p_flip_after_bit3": 0.22986927386575853,
+      "p_full_switch_ge2": 0.2696913105569592,
+      "p_full_switch_ge3": 0.039822036691200706
+    },
+    {
+      "class": "one_switch_just_reversed_001_110",
+      "first3s": [
+        "001",
+        "110"
+      ],
+      "n": 12481,
+      "p_continue_bit3_to_final": 0.6869641855620543,
+      "p_flip_after_bit3": 0.3130358144379457,
+      "p_full_switch_ge2": 0.3756109286114895,
+      "p_full_switch_ge3": 0.06257511417354379
+    },
+    {
+      "class": "alternating_010_101",
+      "first3s": [
+        "010",
+        "101"
+      ],
+      "n": 5827,
+      "p_continue_bit3_to_final": 0.6885189634460271,
+      "p_flip_after_bit3": 0.3114810365539729,
+      "p_full_switch_ge2": 1.0,
+      "p_full_switch_ge3": 0.3734340140724215
+    }
+  ]
+}

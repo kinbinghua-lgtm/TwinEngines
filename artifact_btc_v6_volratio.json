@@ -1,0 +1,100 @@
+{
+  "schema_version": "1.1",
+  "trained_at": "2026-05-04T05:19:02.635980+00:00",
+  "data_meta": {
+    "n_total_windows": 6048,
+    "n_train_windows": 3628,
+    "n_valid_windows": 1210,
+    "n_test_windows": 1210,
+    "obs_step_sec": 10,
+    "observed_from": "1s",
+    "note": "trained with β_vol + 10min rolling vol_ratio"
+  },
+  "params": {
+    "lambda0": 0.002884,
+    "gamma": 0.1,
+    "beta": -8.0,
+    "beta_vol": 0.3266
+  },
+  "thresholds": {
+    "trend_reversal_prob_max": 0.15,
+    "trend_signal_stability_sec_min": 15,
+    "reversal_baseline_offset_min": 0.02,
+    "reversal_signal_stability_sec_min": 3,
+    "reversal_prob_min": 0.208,
+    "reversal_edge_vs_baseline_min": 0.05,
+    "trend_min_expected_value": 0.5
+  },
+  "calibration": {
+    "baseline_prob": 0.299,
+    "bin_table": []
+  },
+  "survival_model": {
+    "global_dynamic": {
+      "a": 0.00756,
+      "c": 24.545
+    },
+    "prefix_buckets": {
+      "000": {
+        "a": 0.00736,
+        "c": 31.5727,
+        "event_rate": 0.209,
+        "p_max": 0.552,
+        "n": 1975
+      },
+      "001": {
+        "a": 0.00764,
+        "c": 19.8784,
+        "event_rate": 0.369,
+        "p_max": 0.5656,
+        "n": 347
+      },
+      "010": {
+        "a": 0.00778,
+        "c": 25.9457,
+        "event_rate": 0.346,
+        "p_max": 0.5722,
+        "n": 188
+      },
+      "011": {
+        "a": 0.00664,
+        "c": 18.1489,
+        "event_rate": 0.276,
+        "p_max": 0.5152,
+        "n": 547
+      },
+      "100": {
+        "a": 0.00673,
+        "c": 25.1485,
+        "event_rate": 0.248,
+        "p_max": 0.52,
+        "n": 432
+      },
+      "101": {
+        "a": 0.00761,
+        "c": 19.8541,
+        "event_rate": 0.356,
+        "p_max": 0.564,
+        "n": 160
+      },
+      "110": {
+        "a": 0.00794,
+        "c": 16.0555,
+        "event_rate": 0.388,
+        "p_max": 0.5797,
+        "n": 366
+      },
+      "111": {
+        "a": 0.008,
+        "c": 36.4769,
+        "event_rate": 0.204,
+        "p_max": 0.5822,
+        "n": 2033
+      }
+    },
+    "source": "fitted 2026-04-11..2026-05-01 step=10s with β_vol=0.3266"
+  },
+  "shadow_engine": {
+    "note": "empirical trend archived. Using three-layer survival model with β_vol + vol_ratio mapping."
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "download": {
+    "start": "2026-04-07",
+    "end": "2026-04-20",
+    "symbol": "BTCUSDT",
+    "download_wall_sec": 57.24437329999637,
+    "rows_1m": 20160,
+    "rows_1s": 1209600
+  },
+  "range_tag": "2026-04-07_2026-04-20",
+  "start_date": "2026-04-07",
+  "end_date": "2026-04-20",
+  "train_calendar_days": 7,
+  "validation_calendar_days_each": [
+    7
+  ],
+  "task": "short_train_sec_multi_valid_minute_curve",
+  "label_mode": "terminal",
+  "trigger_mode": "third_digit",
+  "obs_step_sec": 1,
+  "obs_start_offset_minutes": 3,
+  "obs_duration_sec_typical": 120.0,
+  "minute_elapsed_grid_sec": [
+    0.0,
+    60.0,
+    120.0
+  ],
+  "split_meta": {
+    "build_windows_sec": 1.6875474999833386,
+    "n_windows_raw": 4032,
+    "observed_from_mix": {
+      "1s": 4032
+    },
+    "obs_start_offset_minutes": 3,
+    "n_train_windows": 2016,
+    "n_valid_windows_per_segment": [
+      2016
+    ]
+  },
+  "train_fit_note": "MLE/fit uses full observation-path likelihood on train windows (same as sec-causal-eval); evaluation uses causal truncated H only.",
+  "wall_clock_total_sec": 33.2710905999993,
+  "fit": {
+    "dynamic_a": 0.007057957295625514,
+    "dynamic_c": 21.624553568898666,
+    "gamma": 0.1,
+    "beta": -8.0,
+    "dynamic_fit_success": true,
+    "dynamic_fit_message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+    "fit_wall_sec": 21.949907500005793
+  },
+  "validation_segments": [
+    {
+      "segment_index": 0,
+      "calendar_days": 7,
+      "n_windows": 2016,
+      "curve": [
+        {
+          "elapsed_from_obs_start_sec": 0.0,
+          "n_windows": 2016,
+          "direction_accuracy": 0.7748015873015873,
+          "mean_true_up": 0.5079365079365079
+        },
+        {
+          "elapsed_from_obs_start_sec": 60.0,
+          "n_windows": 2016,
+          "direction_accuracy": 0.7728174603174603,
+          "mean_true_up": 0.5079365079365079
+        },
+        {
+          "elapsed_from_obs_start_sec": 120.0,
+          "n_windows": 2016,
+          "direction_accuracy": 0.7713293650793651,
+          "mean_true_up": 0.5079365079365079
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,238 @@
+{
+  "best_params": {
+    "min_ev": 0.15
+  },
+  "results": [
+    {
+      "min_ev": 0.0,
+      "train": {
+        "total_pnl": 6.878411949999991,
+        "n_trades": 359,
+        "n_wins": 64,
+        "win_rate": 0.17827298050139276,
+        "avg_pnl": 0.01915992186629524,
+        "n_reversal": 270,
+        "n_trend": 89
+      },
+      "val": {
+        "total_pnl": -7.315117250000004,
+        "n_trades": 154,
+        "n_wins": 12,
+        "win_rate": 0.07792207792207792,
+        "avg_pnl": -0.04750076136363639,
+        "n_reversal": 141,
+        "n_trend": 13
+      }
+    },
+    {
+      "min_ev": 0.01,
+      "train": {
+        "total_pnl": 7.455661949999988,
+        "n_trades": 356,
+        "n_wins": 63,
+        "win_rate": 0.17696629213483145,
+        "avg_pnl": 0.020942870646067382,
+        "n_reversal": 269,
+        "n_trend": 87
+      },
+      "val": {
+        "total_pnl": -6.879017250000003,
+        "n_trades": 152,
+        "n_wins": 12,
+        "win_rate": 0.07894736842105263,
+        "avg_pnl": -0.045256692434210544,
+        "n_reversal": 139,
+        "n_trend": 13
+      }
+    },
+    {
+      "min_ev": 0.02,
+      "train": {
+        "total_pnl": 7.344341949999991,
+        "n_trades": 352,
+        "n_wins": 61,
+        "win_rate": 0.17329545454545456,
+        "avg_pnl": 0.020864607812499974,
+        "n_reversal": 266,
+        "n_trend": 86
+      },
+      "val": {
+        "total_pnl": -6.487237250000003,
+        "n_trades": 151,
+        "n_wins": 12,
+        "win_rate": 0.07947019867549669,
+        "avg_pnl": -0.042961836092715255,
+        "n_reversal": 138,
+        "n_trend": 13
+      }
+    },
+    {
+      "min_ev": 0.03,
+      "train": {
+        "total_pnl": 6.817536949999994,
+        "n_trades": 348,
+        "n_wins": 59,
+        "win_rate": 0.16954022988505746,
+        "avg_pnl": 0.019590623419540213,
+        "n_reversal": 263,
+        "n_trend": 85
+      },
+      "val": {
+        "total_pnl": -6.385622250000005,
+        "n_trades": 148,
+        "n_wins": 11,
+        "win_rate": 0.07432432432432433,
+        "avg_pnl": -0.04314609628378382,
+        "n_reversal": 135,
+        "n_trend": 13
+      }
+    },
+    {
+      "min_ev": 0.04,
+      "train": {
+        "total_pnl": 9.172961949999996,
+        "n_trades": 341,
+        "n_wins": 58,
+        "win_rate": 0.17008797653958943,
+        "avg_pnl": 0.02690018167155424,
+        "n_reversal": 258,
+        "n_trend": 83
+      },
+      "val": {
+        "total_pnl": -5.096097250000005,
+        "n_trades": 144,
+        "n_wins": 11,
+        "win_rate": 0.0763888888888889,
+        "avg_pnl": -0.03538956423611114,
+        "n_reversal": 132,
+        "n_trend": 12
+      }
+    },
+    {
+      "min_ev": 0.05,
+      "train": {
+        "total_pnl": 7.88807659999999,
+        "n_trades": 333,
+        "n_wins": 55,
+        "win_rate": 0.16516516516516516,
+        "avg_pnl": 0.023687917717717687,
+        "n_reversal": 252,
+        "n_trend": 81
+      },
+      "val": {
+        "total_pnl": -4.799987250000008,
+        "n_trades": 141,
+        "n_wins": 10,
+        "win_rate": 0.07092198581560284,
+        "avg_pnl": -0.0340424627659575,
+        "n_reversal": 130,
+        "n_trend": 11
+      }
+    },
+    {
+      "min_ev": 0.06,
+      "train": {
+        "total_pnl": 9.143524049999996,
+        "n_trades": 318,
+        "n_wins": 52,
+        "win_rate": 0.16352201257861634,
+        "avg_pnl": 0.028753220283018858,
+        "n_reversal": 241,
+        "n_trend": 77
+      },
+      "val": {
+        "total_pnl": -4.561132250000009,
+        "n_trades": 140,
+        "n_wins": 10,
+        "win_rate": 0.07142857142857142,
+        "avg_pnl": -0.03257951607142864,
+        "n_reversal": 129,
+        "n_trend": 11
+      }
+    },
+    {
+      "min_ev": 0.08,
+      "train": {
+        "total_pnl": 7.882309049999994,
+        "n_trades": 307,
+        "n_wins": 46,
+        "win_rate": 0.1498371335504886,
+        "avg_pnl": 0.02567527377850161,
+        "n_reversal": 237,
+        "n_trend": 70
+      },
+      "val": {
+        "total_pnl": -4.317862050000009,
+        "n_trades": 138,
+        "n_wins": 10,
+        "win_rate": 0.07246376811594203,
+        "avg_pnl": -0.03128885543478268,
+        "n_reversal": 127,
+        "n_trend": 11
+      }
+    },
+    {
+      "min_ev": 0.1,
+      "train": {
+        "total_pnl": 9.091064049999998,
+        "n_trades": 298,
+        "n_wins": 44,
+        "win_rate": 0.1476510067114094,
+        "avg_pnl": 0.030506926342281873,
+        "n_reversal": 232,
+        "n_trend": 66
+      },
+      "val": {
+        "total_pnl": -3.2816931000000067,
+        "n_trades": 132,
+        "n_wins": 10,
+        "win_rate": 0.07575757575757576,
+        "avg_pnl": -0.024861311363636413,
+        "n_reversal": 121,
+        "n_trend": 11
+      }
+    },
+    {
+      "min_ev": 0.12,
+      "train": {
+        "total_pnl": 7.854997899999996,
+        "n_trades": 271,
+        "n_wins": 39,
+        "win_rate": 0.14391143911439114,
+        "avg_pnl": 0.028985232103321018,
+        "n_reversal": 211,
+        "n_trend": 60
+      },
+      "val": {
+        "total_pnl": -2.3886131000000055,
+        "n_trades": 124,
+        "n_wins": 10,
+        "win_rate": 0.08064516129032258,
+        "avg_pnl": -0.019263008870967786,
+        "n_reversal": 114,
+        "n_trend": 10
+      }
+    },
+    {
+      "min_ev": 0.15,
+      "train": {
+        "total_pnl": 8.666591699999998,
+        "n_trades": 255,
+        "n_wins": 37,
+        "win_rate": 0.1450980392156863,
+        "avg_pnl": 0.033986634117647053,
+        "n_reversal": 198,
+        "n_trend": 57
+      },
+      "val": {
+        "total_pnl": -0.9225950000000005,
+        "n_trades": 111,
+        "n_wins": 10,
+        "win_rate": 0.09009009009009009,
+        "avg_pnl": -0.00831166666666667,
+        "n_reversal": 101,
+        "n_trend": 10
+      }
+    }
+  ]
+}

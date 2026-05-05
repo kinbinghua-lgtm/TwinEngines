@@ -1,0 +1,22 @@
+[Unit]
+Description=TwinEngines strategy (naked-third-digit-live real)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/TwinEngines
+Environment=PYTHONPATH=/root/TwinEngines/src
+# 上一实例异常退出时可能遗留 twinengines.pid；在 systemd 已停旧进程后再启新进程前清除（前缀 - 忽略错误）
+ExecStartPre=-/bin/rm -f /root/TwinEngines/data_runtime/twinengines.pid
+# 系统启动后默认直接进入裸策略实盘（仍会校验 .env 实盘闸门）。
+ExecStart=/root/TwinEngines/.venv/bin/python -m twinengines.cli naked-third-digit-live --env-file .env --model-json reports/prefix_survival_model_90d_step10.json --yes-real-money --kelly-sizing --poll-sec 8 --confidence-min 0.51 --target-quote-usdc 1 --state-json data_runtime/naked_real_state.json --live-log-jsonl logs/naked_live_ticks.jsonl
+Restart=always
+RestartSec=25
+TimeoutStopSec=90
+StandardOutput=append:/root/TwinEngines/logs/strategy_stdout.log
+StandardError=append:/root/TwinEngines/logs/strategy_stdout.log
+
+[Install]
+WantedBy=multi-user.target

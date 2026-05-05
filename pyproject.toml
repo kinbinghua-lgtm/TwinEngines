@@ -1,0 +1,6 @@
+[project]
+name = "twinengines"
+version = "0.1.0"
+description = "Polymarket 5m BTC 顺势实盘（经验 EV + 最小部署）"
+requires-python = ">=3.10"
+

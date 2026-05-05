@@ -1,0 +1,132 @@
+{
+  "download": {
+    "start": "2026-04-21",
+    "end": "2026-05-01",
+    "symbol": "BTCUSDT",
+    "download_wall_sec": 18.031104399997275,
+    "rows_1m": 15840,
+    "rows_1s": 950400
+  },
+  "range_tag": "2026-04-21_2026-05-01",
+  "start_date": "2026-04-21",
+  "end_date": "2026-05-01",
+  "train_calendar_days": 7,
+  "validation_calendar_days_each": [
+    1,
+    1,
+    2
+  ],
+  "task": "short_train_sec_multi_valid_minute_curve",
+  "label_mode": "terminal",
+  "trigger_mode": "third_digit",
+  "obs_step_sec": 1,
+  "obs_start_offset_minutes": 3,
+  "obs_duration_sec_typical": 120.0,
+  "minute_elapsed_grid_sec": [
+    0.0,
+    60.0,
+    120.0
+  ],
+  "split_meta": {
+    "build_windows_sec": 1.5335798999876715,
+    "n_windows_raw": 3168,
+    "observed_from_mix": {
+      "1s": 3168
+    },
+    "obs_start_offset_minutes": 3,
+    "n_train_windows": 2016,
+    "n_valid_windows_per_segment": [
+      288,
+      288,
+      576
+    ]
+  },
+  "train_fit_note": "MLE/fit uses full observation-path likelihood on train windows (same as sec-causal-eval); evaluation uses causal truncated H only.",
+  "wall_clock_total_sec": 39.47249700000975,
+  "fit": {
+    "dynamic_a": 0.007788346559527312,
+    "dynamic_c": 29.66503318324431,
+    "gamma": 0.1,
+    "beta": -8.0,
+    "dynamic_fit_success": true,
+    "dynamic_fit_message": "CONVERGENCE: RELATIVE REDUCTION OF F <= FACTR*EPSMCH",
+    "fit_wall_sec": 31.44481819999055
+  },
+  "validation_segments": [
+    {
+      "segment_index": 0,
+      "calendar_days": 1,
+      "n_windows": 288,
+      "curve": [
+        {
+          "elapsed_from_obs_start_sec": 0.0,
+          "n_windows": 288,
+          "direction_accuracy": 0.7777777777777778,
+          "mean_true_up": 0.4548611111111111
+        },
+        {
+          "elapsed_from_obs_start_sec": 60.0,
+          "n_windows": 288,
+          "direction_accuracy": 0.8159722222222222,
+          "mean_true_up": 0.4548611111111111
+        },
+        {
+          "elapsed_from_obs_start_sec": 120.0,
+          "n_windows": 288,
+          "direction_accuracy": 0.8194444444444444,
+          "mean_true_up": 0.4548611111111111
+        }
+      ]
+    },
+    {
+      "segment_index": 1,
+      "calendar_days": 1,
+      "n_windows": 288,
+      "curve": [
+        {
+          "elapsed_from_obs_start_sec": 0.0,
+          "n_windows": 288,
+          "direction_accuracy": 0.7395833333333334,
+          "mean_true_up": 0.5277777777777778
+        },
+        {
+          "elapsed_from_obs_start_sec": 60.0,
+          "n_windows": 288,
+          "direction_accuracy": 0.75,
+          "mean_true_up": 0.5277777777777778
+        },
+        {
+          "elapsed_from_obs_start_sec": 120.0,
+          "n_windows": 288,
+          "direction_accuracy": 0.7430555555555556,
+          "mean_true_up": 0.5277777777777778
+        }
+      ]
+    },
+    {
+      "segment_index": 2,
+      "calendar_days": 2,
+      "n_windows": 576,
+      "curve": [
+        {
+          "elapsed_from_obs_start_sec": 0.0,
+          "n_windows": 576,
+          "direction_accuracy": 0.7013888888888888,
+          "mean_true_up": 0.4930555555555556
+        },
+        {
+          "elapsed_from_obs_start_sec": 60.0,
+          "n_windows": 576,
+          "direction_accuracy": 0.7118055555555556,
+          "mean_true_up": 0.4930555555555556
+        },
+        {
+          "elapsed_from_obs_start_sec": 120.0,
+          "n_windows": 576,
+          "direction_accuracy": 0.7135416666666666,
+          "mean_true_up": 0.4930555555555556
+        }
+      ]
+    }
+  ]
+}

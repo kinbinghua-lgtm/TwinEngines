@@ -1,0 +1,55 @@
+{
+  "download": {
+    "start": "2026-04-07",
+    "end": "2026-04-20",
+    "symbol": "BTCUSDT",
+    "download_wall_sec": 1.57493840000825,
+    "rows_1m": 20160,
+    "rows_1s": 1209600
+  },
+  "range_tag": "2026-04-07_2026-04-20",
+  "start_date": "2026-04-07",
+  "end_date": "2026-04-20",
+  "n_windows": 4032,
+  "n_pairs_aligned": 4031,
+  "task": "cross_window_next_open",
+  "definition": "label_next_up = (next.close_m5 > next.baseline); baseline of next window = first-minute open of that window",
+  "train_calendar_days": 7,
+  "validation_calendar_days_each": [
+    7
+  ],
+  "n_pairs_train": 2016,
+  "n_pairs_valid_per_segment": [
+    2015
+  ],
+  "logistic_prev_return": {
+    "intercept": 0.04455538559678706,
+    "coef": -72.06226757541329,
+    "optim_success": true
+  },
+  "survival_fit_on_prev_train_only": {
+    "gamma": 0.1,
+    "beta": -8.0,
+    "dynamic_a": 0.007057957295625514,
+    "dynamic_c": 21.624553568898666,
+    "dynamic_fit_success": true
+  },
+  "train_metrics": {
+    "mean_next_up_rate": 0.5104166666666666,
+    "accuracy_majority_class": 0.5104166666666666,
+    "accuracy_persistence_direction": 0.4801587301587302,
+    "accuracy_logistic_in_sample": 0.5168650793650794
+  },
+  "validation_segments": [
+    {
+      "n_pairs": 2015,
+      "mean_next_up_rate": 0.5076923076923077,
+      "accuracy_majority_train_rate": 0.5076923076923077,
+      "accuracy_persistence_prev_direction": 0.4833746898263027,
+      "accuracy_logistic_prev_return_oos": 0.5071960297766749,
+      "corr_prev_window_p_rev_vs_next_up": -0.02740169118917144,
+      "note_exploratory": "accuracy_pr_rev_lt_half_as_next_up 无理论保证，仅作粗对照",
+      "accuracy_explore_pr_rev_lt_half_as_next_up": 0.5081885856079404
+    }
+  ]
+}

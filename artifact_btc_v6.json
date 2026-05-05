@@ -1,0 +1,99 @@
+{
+  "schema_version": "1.1",
+  "trained_at": "2026-05-04T05:48:26.920421+00:00",
+  "data_meta": {
+    "n_total_windows": 8640,
+    "n_train_windows": 5760,
+    "n_valid_windows": 2880,
+    "obs_step_sec": 10,
+    "observed_from": "1s",
+    "note": "cal table v2, beta=-3, beta_vol=0 (no vol_ratio)"
+  },
+  "params": {
+    "lambda0": 0.003,
+    "gamma": 0.1,
+    "beta": -3.0,
+    "beta_vol": 0.0
+  },
+  "thresholds": {
+    "trend_reversal_prob_max": 0.15,
+    "trend_signal_stability_sec_min": 15,
+    "reversal_baseline_offset_min": 0.02,
+    "reversal_signal_stability_sec_min": 3,
+    "reversal_prob_min": 0.208,
+    "reversal_edge_vs_baseline_min": 0.05,
+    "trend_min_expected_value": 0.5
+  },
+  "calibration": {
+    "baseline_prob": 0.3,
+    "bin_table": []
+  },
+  "survival_model": {
+    "global_dynamic": {
+      "a": 0.007,
+      "c": 20
+    },
+    "prefix_buckets": {
+      "000": {
+        "a": 0.00716,
+        "c": 27.6856,
+        "event_rate": 0.202,
+        "p_max": 0.5423,
+        "n": 1912
+      },
+      "001": {
+        "a": 0.00668,
+        "c": 18.4922,
+        "event_rate": 0.33,
+        "p_max": 0.5174,
+        "n": 361
+      },
+      "010": {
+        "a": 0.00671,
+        "c": 22.0588,
+        "event_rate": 0.293,
+        "p_max": 0.5191,
+        "n": 174
+      },
+      "011": {
+        "a": 0.00771,
+        "c": 22.8478,
+        "event_rate": 0.28,
+        "p_max": 0.5687,
+        "n": 482
+      },
+      "100": {
+        "a": 0.00697,
+        "c": 20.1116,
+        "event_rate": 0.254,
+        "p_max": 0.5323,
+        "n": 422
+      },
+      "101": {
+        "a": 0.00703,
+        "c": 16.9311,
+        "event_rate": 0.327,
+        "p_max": 0.5357,
+        "n": 147
+      },
+      "110": {
+        "a": 0.00878,
+        "c": 18.3955,
+        "event_rate": 0.396,
+        "p_max": 0.6163,
+        "n": 346
+      },
+      "111": {
+        "a": 0.00684,
+        "c": 25.6767,
+        "event_rate": 0.191,
+        "p_max": 0.5261,
+        "n": 1916
+      }
+    },
+    "source": "ln(vr) beta_vol=0.35237142272044353"
+  },
+  "shadow_engine": {
+    "note": "calibration table lookup replaces mapping"
+  }
+}
