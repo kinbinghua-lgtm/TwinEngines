@@ -102,12 +102,14 @@ async function loadAll() {
     if (window._settledPage == null) window._settledPage = 0;
     renderSettledPage();
 
-    // Shadow compare bar
-    var shEq = sr.equity != null ? sr.equity.toFixed(2) : '--';
+    // Real account summary
+    var realBal = document.getElementById('ac-bal');
+    var balText = realBal ? realBal.textContent : '--';
     var comp = document.getElementById('compare-text');
-    comp.innerHTML = '影子盘: <strong>$' + shEq + '</strong> | PnL: <strong class="' + (totalPnl>0?'pos':'neg') + '">'
-      + (totalPnl>0?'+':'') + totalPnl.toFixed(2) + '</strong> | 胜率: <strong>' + wins + '/' + filledOnly.length
-      + ' (' + (filledOnly.length>0 ? (wins/filledOnly.length*100).toFixed(0) : 0) + '%)</strong>';
+    comp.innerHTML = '真实权益: <strong>' + balText + '</strong> | 待赎回: <strong id="ac-pend-sum">--</strong> | 影子参考: <strong>$' + (sr.equity||0).toFixed(2) + '</strong>';
+    var pendEl = document.getElementById('ac-pend');
+    var pendSumEl = document.getElementById('ac-pend-sum');
+    if (pendEl && pendSumEl) pendSumEl.textContent = pendEl.textContent;
 
     // Version
     var vr = await fetch('/api/version').then(r => r.json());
