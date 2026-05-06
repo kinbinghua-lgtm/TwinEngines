@@ -55,6 +55,7 @@ from .polymarket_client import OrderState, OrderTicket, PolymarketClient
 from .polymarket_feed import PolymarketFeed, PolymarketFeedCfg
 from .position_lock import PositionLock
 from .reconciliation import LocalPosition, Reconciler, ReconcilerCfg
+from ..risk.sizing import SizingCfg, stake_for_trade
 from .shadow_signal_enrich import enrich_shadow_event_with_polymarket
 from .shadow_signal_engine import ShadowSignalEngine
 from .single_instance import SingleInstanceLock

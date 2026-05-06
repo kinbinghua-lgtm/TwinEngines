@@ -4,7 +4,7 @@ import argparse, json, os, signal, sqlite3, subprocess, sys, time
 from pathlib import Path
 from typing import Any, Optional
 sys.path.insert(0, os.environ.get("TWINENGINES_ROOT", os.path.abspath(".")))
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, redirect, request, send_file
 
 HERE = Path(__file__).resolve().parent
 ROOT = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 and not str(sys.argv[1]).startswith("-") else Path.cwd().resolve()
