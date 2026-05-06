@@ -631,12 +631,14 @@ class LiveRunner:
                 except Exception:
                     pass
                 self._sim_equity = last_eq + total_pnl
+                is_real = not (self.cfg.dry_run_signals or self.cfg.record_shadow_signals)
                 res = _j.dumps({
                     "window_id": window_id, "seq": seq, "dir": best_dir,
                     "won": won, "pnl": round(total_pnl, 2),
                     "equity": round(self._sim_equity, 2),
                     "ask": round(avg_ask, 4), "fill_amt": round(total_fill, 2),
                     "fill_sec": first_sec, "partials": len(fills),
+                    "mode": "real" if is_real else "shadow",
                 })
                 # 确保文件尾有换行符, 防止 JSON 粘连
                 with open("/root/TwinEngines/logs/window_results.jsonl", "ab+") as _f:

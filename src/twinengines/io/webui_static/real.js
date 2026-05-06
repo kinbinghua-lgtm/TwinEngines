@@ -93,6 +93,7 @@ async function loadAll() {
     var filledOnly = [];
     var wins = 0, totalPnl = 0;
     for (var i = 0; i < items.length; i++) {
+      if (items[i].mode !== 'real') continue;  // 只显示真实盘
       if (items[i].won) wins++;
       totalPnl += (items[i].pnl || 0);
       if (items[i].dir) filledOnly.push(items[i]);
@@ -103,14 +104,13 @@ async function loadAll() {
     if (window._settledPage == null) window._settledPage = 0;
     renderSettledPage();
 
-    // Real account summary
-    var realBal = document.getElementById('ac-bal');
-    var balText = realBal ? realBal.textContent : '--';
+    // Real PnL summary
     var comp = document.getElementById('compare-text');
-    comp.innerHTML = '真实权益: <strong>' + balText + '</strong> | 待赎回: <strong id="ac-pend-sum">--</strong> | 影子参考: <strong>$' + (sr.equity||0).toFixed(2) + '</strong>';
-    var pendEl = document.getElementById('ac-pend');
-    var pendSumEl = document.getElementById('ac-pend-sum');
-    if (pendEl && pendSumEl) pendSumEl.textContent = pendEl.textContent;
+    if (filledOnly.length > 0) {
+      comp.innerHTML = '真实 PnL: <strong class="' + (totalPnl>0?'pos':'neg') + '">' + (totalPnl>0?'+':'') + totalPnl.toFixed(2) + '</strong> | 胜率: <strong>' + wins + '/' + filledOnly.length + ' (' + (wins/filledOnly.length*100).toFixed(0) + '%)</strong> | 影子参考: $' + (sr.equity||0).toFixed(2);
+    } else {
+      comp.innerHTML = '暂无真实成交 | 影子参考: <strong>$' + (sr.equity||0).toFixed(2) + '</strong>';
+    }
 
     // Version
     var vr = await fetch('/api/version').then(r => r.json());
