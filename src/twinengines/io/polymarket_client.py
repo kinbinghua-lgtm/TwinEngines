@@ -831,10 +831,12 @@ class PolymarketClient:
 
             ticket.order_type = "FOK"
             ticket.size_shares = float(size)
+            order_price = f"{float(limit_price):.4f}"
+            order_size = f"{float(size):.4f}"
             args_fok = OrderArgsV2(
                 token_id=ticket.token_id,
-                price=limit_price,
-                size=float(size),
+                price=order_price,
+                size=order_size,
                 side=ticket.side,
             )
             signed_fok = self._real_client.create_order(args_fok)

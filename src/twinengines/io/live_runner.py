@@ -1247,7 +1247,7 @@ class LiveRunner:
             "safe_quote": safe_quote,
             "safe_shares": safe_shares,
             "vwap": vwap,
-            "limit_price": actual_max_price if actual_max_price > 0 else max_price,
+            "limit_price": max(float(POLYMARKET_PLATFORM.buy_price_floor), actual_max_price if actual_max_price > 0 else max_price),
             "levels_used": levels,
         }
 
@@ -1300,6 +1300,8 @@ class LiveRunner:
         max_price_up_ticks = ask_up + cross_ticks * price_tick
         max_price_up_ev = max_price_by_ev(1 - p_rev if trig_dir == "down" else p_rev, ev_min_threshold)
         max_price_up = min(max_price_up_ticks, max_price_up_ev, 0.99)
+        if max_price_up < float(POLYMARKET_PLATFORM.buy_price_floor):
+            max_price_up = float(POLYMARKET_PLATFORM.buy_price_floor)
         
         plan_up = self._compute_depth_plan(
             asks=asks_up,
@@ -1312,6 +1314,8 @@ class LiveRunner:
         max_price_dn_ticks = ask_dn + cross_ticks * price_tick
         max_price_dn_ev = max_price_by_ev(p_rev if trig_dir == "down" else 1 - p_rev, ev_min_threshold)
         max_price_dn = min(max_price_dn_ticks, max_price_dn_ev, 0.99)
+        if max_price_dn < float(POLYMARKET_PLATFORM.buy_price_floor):
+            max_price_dn = float(POLYMARKET_PLATFORM.buy_price_floor)
         
         plan_dn = self._compute_depth_plan(
             asks=asks_dn,
@@ -1677,6 +1681,25 @@ class LiveRunner:
             comp_size_shares = float(comp.size_shares)
 
         client_order_id = fixed_client_order_id or f"{window_id}:{side}:{uuid.uuid4().hex[:8]}"
+        t_remaining_sec = None
+        try:
+            if str(window_id).startswith("w"):
+                t_remaining_sec = (int(str(window_id)[1:]) - int(time.time() * 1000)) / 1000.0
+        except Exception:
+            t_remaining_sec = None
+        min_strategy_entry_price = 0.10
+        if t_remaining_sec is not None and t_remaining_sec <= 10:
+            min_strategy_entry_price = 0.20
+        elif t_remaining_sec is not None and t_remaining_sec <= 30:
+            min_strategy_entry_price = 0.15
+        if best_ask < min_strategy_entry_price or float(entry_px) < min_strategy_entry_price:
+            logger.info(
+                "submit_signal_order: skip low-price real entry window_id=%s dir=%s best_ask=%.4f entry_px=%.4f min=%.4f T=%s",
+                window_id, direction, best_ask, float(entry_px), min_strategy_entry_price,
+                f"{t_remaining_sec:.1f}" if t_remaining_sec is not None else "--",
+            )
+            return None
+
         if not self.position_lock.try_acquire(window_id, side=side, client_order_id=client_order_id, note=note):
             logger.warning("submit_signal_order: window lock busy window_id=%s", window_id)
             return None
