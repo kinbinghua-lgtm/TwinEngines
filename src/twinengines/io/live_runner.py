@@ -348,6 +348,8 @@ class LiveRunner:
         self._init_shadow_signal_engine()  # 影子引擎始终启动 (真实盘也需要信号)
         if ok and not self.cfg.dry_run_signals:
             self._start_auto_redeem_worker()
+            # 启动时扫描历史已结算市场, 入队赎回
+            self._scan_historical_positions_for_redeem()
 
         # 风控: Regime + RiskGuard (启动时先用 ULTRA 参数, 后续随权益动态切换)
         self.regime_manager = RegimeManager()
@@ -1222,6 +1224,34 @@ class LiveRunner:
                 "end_iso": market.end_iso,
             }
 
+    def _scan_historical_positions_for_redeem(self) -> None:
+        """启动时扫描 Polymarket 上已有的可赎回持仓并入队."""
+        try:
+            if not self.poly_client or not self.market_resolver:
+                return
+            # 获取当前活跃市场附近的已结算市场
+            import urllib.request, json as _j
+            url = "https://clob.polymarket.com/markets?closed=true&limit=10"
+            req = urllib.request.Request(url, headers={"User-Agent": "TE/1.0"})
+            data = _j.loads(urllib.request.urlopen(req, timeout=10).read())
+            for m in (data if isinstance(data, list) else []):
+                cid = m.get("condition_id")
+                if not cid: continue
+                # 检查是否有持仓
+                try:
+                    pos = self.poly_client.fetch_market_positions(condition_id=cid)
+                    if pos and any(float(p.get("amount", 0) or 0) > 0 for p in pos):
+                        self._redeem_queue[cid] = {
+                            "condition_id": cid,
+                            "eligible_ts_ms": 0,  # 立即可赎回
+                            "enqueued_at_ms": int(__import__("time").time() * 1000),
+                        }
+                        logger.info("auto_redeem: enqueued historical position cid=%s", cid[:16])
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning("scan_historical_redeem failed: %s", e)
+
     def _start_auto_redeem_worker(self) -> None:
         if self._auto_redeem_thread is not None:
             return
@@ -1233,6 +1263,7 @@ class LiveRunner:
         self._auto_redeem_thread.start()
 
     def _auto_redeem_loop(self) -> None:
+        logger.info("auto_redeem worker started")
         interval = max(5.0, float(self.cfg.runtime.auto_redeem_interval_sec))
         while not self._stopping.is_set():
             self._auto_redeem_once()
