@@ -103,6 +103,18 @@ def _round_order_size_shares_up(raw_size: float, min_sz: float) -> float:
     x = max(float(raw_size), float(min_sz))
     return round(math.ceil(x * 10000 - 1e-9) / 10000, 4)
 
+def _round_buy_size_for_quote_cents(*, price: float, raw_size: float, min_sz: float) -> float:
+    """BUY FOK 的 price*size 会形成美元金额；Polymarket 要求金额最多 2 位小数。"""
+    px = max(float(price), 0.01)
+    target = max(float(raw_size), float(min_sz))
+    cents = max(1, math.ceil(px * target * 100 - 1e-9))
+    for _ in range(10000):
+        size = round((cents / 100.0) / px, 4)
+        if size + 1e-12 >= target and abs((size * px * 100) - round(size * px * 100)) < 1e-7:
+            return size
+        cents += 1
+    return _round_order_size_shares_up(target, min_sz)
+
 def _http_get_json(url: str, *, timeout: float, user_agent: str) -> Any:
     req = urllib.request.Request(
         url,
@@ -727,7 +739,12 @@ class PolymarketClient:
                 raw_size = float(ticket.size_shares)
             else:
                 raw_size = ticket.size_quote_usdc / limit_price if limit_price > 0 else 0.0
-            size = _round_order_size_shares_up(raw_size, min_sz)
+            if ticket.side.upper() == "BUY":
+                size = _round_buy_size_for_quote_cents(price=limit_price, raw_size=raw_size, min_sz=min_sz)
+                ticket.size_quote_usdc = round(limit_price * float(size), 2)
+                ticket.margin_locked = ticket.size_quote_usdc
+            else:
+                size = _round_order_size_shares_up(raw_size, min_sz)
             if size < min_sz:
                 logger.warning(
                     "entry buy rejected: size %.2f < platform min %.1f coid=%s",
