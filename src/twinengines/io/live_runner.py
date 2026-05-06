@@ -73,6 +73,7 @@ _SIM_WIN_BUDGET: dict[str, float] = {}  # 影子盘每窗口剩余 Kelly 预算
 _SIM_WIN_DIR: dict[str, str] = {}       # 影子盘每窗口首次成交方向
 _REAL_WIN_BUDGET: dict[str, float] = {} # 真实盘每窗口剩余 Kelly 预算 (独立于影子)
 _REAL_WIN_DIR: dict[str, str] = {}      # 真实盘每窗口首次成交方向
+_REAL_FOK_SENT: set[str] = set()        # 真实盘本窗口已发过 FOK (防重复下单)
 
 @dataclass
 class LiveRunnerCfg:
@@ -565,9 +566,10 @@ class LiveRunner:
             return None
 
     def _on_shadow_window_close(self, window_id: str) -> None:
-        global _SIM_FILLED, _REAL_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR, _REAL_WIN_BUDGET, _REAL_WIN_DIR
+        global _SIM_FILLED, _REAL_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR, _REAL_WIN_BUDGET, _REAL_WIN_DIR, _REAL_FOK_SENT
         _SIM_FILLED.discard(window_id)
         _REAL_FILLED.discard(window_id)
+        _REAL_FOK_SENT.discard(window_id)
         _SIM_WIN_BUDGET.pop(window_id, None)
         _SIM_WIN_DIR.pop(window_id, None)
         _REAL_WIN_BUDGET.pop(window_id, None)
@@ -677,7 +679,7 @@ class LiveRunner:
 
     def _simulate_order_from_signal(self, event: dict) -> None:
         global _SIM_FILLED, _REAL_FILLED, _SIM_CURRENT
-        global _SIM_WIN_BUDGET, _SIM_WIN_DIR, _REAL_WIN_BUDGET, _REAL_WIN_DIR
+        global _SIM_WIN_BUDGET, _SIM_WIN_DIR, _REAL_WIN_BUDGET, _REAL_WIN_DIR, _REAL_FOK_SENT
         window_id = str(event.get("window_id") or "")
         # 影子/真实盘各自独立的锁仓/预算/方向
         is_real_mode = (not self.cfg.dry_run_signals and not self.cfg.record_shadow_signals
@@ -820,8 +822,14 @@ class LiveRunner:
         elif single < 2.50:
             single = 2.50       # 预算够但深度薄, 保底 $2.50
 
+        # 真实盘: 本窗已发过 FOK → 不重复下单
+        if is_real_mode and window_id in _REAL_FOK_SENT:
+            _SIM_CURRENT["status"] = "filled"; return
+
         # 真实盘: 先提交 FOK, 被拒则跳过 (不扣预算, 等下一信号重试)
         if is_real_mode:
+            global _REAL_FOK_SENT
+            _REAL_FOK_SENT.add(window_id)  # 防重复下单
             try:
                 active = self.market_resolver.get_active()
                 if active:
