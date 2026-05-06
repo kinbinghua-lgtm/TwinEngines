@@ -144,6 +144,8 @@ def create_app(*, root: Path, password: Optional[str] = None) -> Flask:
 
     @app.route("/")
     def index(): return send_file(str(STATIC / "index.html"))
+    @app.route("/static/<path:filename>")
+    def static_files(filename): return send_file(str(STATIC / filename))
     @app.route("/real")
     def real(): return redirect("/")
     @app.route("/healthz")
