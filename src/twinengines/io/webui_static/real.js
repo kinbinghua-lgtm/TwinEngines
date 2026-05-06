@@ -93,7 +93,7 @@ async function loadAll() {
     var filledOnly = [];
     var wins = 0, totalPnl = 0;
     for (var i = 0; i < items.length; i++) {
-      if (items[i].mode !== 'real') continue;  // 只显示真实盘
+      if (items[i].mode !== 'real') continue;  // 只显示真实盘 (无mode=旧影子记录,也跳过)
       if (items[i].won) wins++;
       totalPnl += (items[i].pnl || 0);
       if (items[i].dir) filledOnly.push(items[i]);
