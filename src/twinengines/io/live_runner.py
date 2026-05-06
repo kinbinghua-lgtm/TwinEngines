@@ -1228,8 +1228,7 @@ class LiveRunner:
             for m in markets:
                 cid = m.get("condition_id")
                 if not cid: continue
-                # 只处理已结算的
-                if not m.get("resolved"): continue
+                # 只处理已关闭的 (不预检 resolved, CTF 自行判断)
                 # 检查是否有持仓
                 try:
                     pos = self.poly_client.fetch_market_positions(condition_id=cid)
@@ -1278,16 +1277,6 @@ class LiveRunner:
         for it in targets:
             cid = str(it.get("condition_id") or "")
             if not cid:
-                continue
-            # 检查市场是否已结算 (UMA 已确认)
-            try:
-                import urllib.request, json as _j2
-                url = f"https://clob.polymarket.com/markets/{cid}"
-                req = urllib.request.Request(url, headers={"User-Agent": "TE/1.0"})
-                mkt = _j2.loads(urllib.request.urlopen(req, timeout=5).read())
-                if not mkt.get("resolved"):
-                    continue  # UMA 未确认, 跳过
-            except Exception:
                 continue
             has_pos = self._has_redeemable_position(condition_id=cid)
             if not has_pos:
