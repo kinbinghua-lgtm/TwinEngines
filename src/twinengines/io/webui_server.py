@@ -220,28 +220,29 @@ def summary_payload(root: Path) -> dict[str, Any]:
 
 def current_decision_payload(root: Path) -> dict[str, Any]:
     cw = read_json(root / "data_runtime" / "current_window.json") or {}; sm = summary_payload(root); wid = str(cw.get("window_id") or "")
-    T = safe_float(cw.get("T") or cw.get("T_remaining") or cw.get("t_remaining_sec")); best_dir = str(cw.get("best_dir") or "").lower()
+    T = safe_float(cw.get("T") or cw.get("T_remaining") or cw.get("t_remaining_sec")); best_dir = str(cw.get("best_dir") or "").lower(); td = str(cw.get("td") or cw.get("trigger_direction") or "").lower()
+    dir_label = best_dir.upper() if best_dir else "未确定"; trigger_label = td.upper() if td else "无"; direction_mode = "反转" if best_dir and td and best_dir != td else ("顺势" if best_dir and td else "未确定")
     ask_up = safe_float(cw.get("ask_up")); ask_down = safe_float(cw.get("ask_down")); ask = ask_up if best_dir == "up" else ask_down if best_dir == "down" else None
     ev = safe_float(cw.get("fill_ev") or cw.get("best_ev") or cw.get("ev_rev") or cw.get("ev_trend")); ev_min = 0.05 if (T or 0) > 80 else (0.03 if (T or 0) > 30 else 0.02)
     real_target = safe_float(cw.get("real_target_quote")); shares = real_target / ask if real_target is not None and ask else None
     bal = sm.get("real_balance_usdc"); cap = float(bal) * 0.15 if bal is not None else None; real_status = str(cw.get("real_status") or "未提交")
     def c(k,l,s,t): return {"key": k, "label": l, "status": s, "text": t}
     real = [
-        c("time","时间条件","pass" if T is not None and T >= 5 else "fail", f"T={T:.0f}s >= 5s" if T is not None else "无数据"),
-        c("book","盘口条件","pass" if ask_up and ask_down else "fail", f"ask_up={ask_up}, ask_down={ask_down}"),
-        c("ev","EV 条件","pass" if ev is not None and ev >= ev_min else "fail", f"EV={ev if ev is not None else '--'}，阈值={ev_min:.2f}"),
-        c("reversal_d","reversal d_abs 条件","pass" if cw.get("r_d_ok") is True else "fail" if cw.get("r_d_ok") is False else "unknown", f"d_abs={cw.get('d_abs','--')}，d_cliff={cw.get('d_cliff','--')}"),
-        c("reversal_p","reversal p 条件","pass" if cw.get("r_p_ok") is True else "fail" if cw.get("r_p_ok") is False else "unknown", f"p_rev={cw.get('p_lower') or cw.get('p_rev') or '--'}，p_min_r={cw.get('p_min_r','--')}"),
-        c("kelly","Kelly 条件","pass" if real_target is not None and real_target >= 2.5 else "fail" if "Kelly<2.5" in real_status else "unknown", f"目标金额={real_target if real_target is not None else '--'}，最低=$2.50"),
-        c("cap","资金上限","pass" if cap is not None and cap >= 2.5 else "fail" if cap is not None else "unknown", f"单窗口上限={cap:.2f}" if cap is not None else "真实余额不可用"),
-        c("min_shares","最低 5 shares","pass" if shares is not None and shares >= 5 else "fail" if shares is not None else "unknown", f"目标 shares={shares:.2f}" if shares is not None else "尚无目标金额/价格"),
-        c("submit","实盘状态","pass" if real_status == "real_fok_evaluated" else "warn", real_status),
+        c("time","是否还来得及下单","pass" if T is not None and T >= 5 else "fail", f"当前窗口剩余 {T:.0f}s，需要至少 5s" if T is not None else "没有剩余时间数据"),
+        c("book","UP/DOWN 盘口价格是否可用","pass" if ask_up and ask_down else "fail", f"UP 买一价={ask_up}，DOWN 买一价={ask_down}；本次评估 {dir_label} 使用价格={ask}"),
+        c("ev","本方向期望收益是否够高","pass" if ev is not None and ev >= ev_min else "fail", f"评估方向={dir_label}（{direction_mode}），EV={ev if ev is not None else '--'}，最低要求={ev_min:.2f}"),
+        c("reversal_d","反转信号幅度是否不过热","pass" if cw.get("r_d_ok") is True else "fail" if cw.get("r_d_ok") is False else "unknown", f"仅反转方向重点看：d_abs={cw.get('d_abs','--')}，允许上限={cw.get('d_cliff','--')}"),
+        c("reversal_p","反转概率是否足够","pass" if cw.get("r_p_ok") is True else "fail" if cw.get("r_p_ok") is False else "unknown", f"仅反转方向重点看：p_rev={cw.get('p_lower') or cw.get('p_rev') or '--'}，最低要求={cw.get('p_min_r','--')}"),
+        c("kelly","按真实余额算出的下注金额是否达标","pass" if real_target is not None and real_target >= 2.5 else "fail" if "Kelly<2.5" in real_status else "unknown", f"评估 {dir_label}，目标金额={real_target if real_target is not None else '--'}，最低=$2.50"),
+        c("cap","真实账户单窗口资金上限是否够用","pass" if cap is not None and cap >= 2.5 else "fail" if cap is not None else "unknown", f"真实余额×15%={cap:.2f}，需要至少 $2.50" if cap is not None else "真实余额不可用"),
+        c("min_shares","目标金额能否买到至少 5 shares","pass" if shares is not None and shares >= 5 else "fail" if shares is not None else "unknown", f"评估 {dir_label}，目标 shares={shares:.2f}" if shares is not None else "尚无目标金额/本方向价格"),
+        c("submit","实盘 FOK 是否已提交/评估","pass" if real_status == "real_fok_evaluated" else "warn", f"评估方向={dir_label}，状态={real_status}"),
     ]
     fail = next((x for x in real if x["status"] == "fail"), None)
     reason = "已提交/评估 FOK，等待订单审计确认" if real_status == "real_fok_evaluated" else ("未提交：Kelly<2.5，账户余额或 cap 不足" if "Kelly<2.5" in real_status else (f"未提交：{fail['label']}未满足" if fail else f"未提交：{real_status}"))
     fill = safe_float(cw.get("fill_amt") or cw.get("fill_amount")); shadow_status = str(cw.get("status") or "等待")
     shadow = [c("time","时间条件","pass" if T is not None and T >= 5 else "fail", f"T={T:.0f}s >= 5s" if T is not None else "无数据"), c("ev","EV 条件","pass" if ev is not None and ev >= ev_min else "fail", f"EV={ev if ev is not None else '--'}，阈值={ev_min:.2f}"), c("kelly","模拟 Kelly 条件","pass" if fill and fill >= 2.5 else "warn", f"影子 fill={fill if fill is not None else '--'}")]
-    return {"ok": True, "window_id": wid, "window_label": window_label(wid), "seq": item_seq(cw), "prefix": item_seq(cw), "T_remaining": T, "td": cw.get("td"), "best_dir": best_dir, "ask_up": ask_up, "ask_down": ask_down, "best_ev": ev, "real": {"status": real_status, "reason": reason, "target_quote": real_target, "target_shares": shares, "conditions": real}, "shadow": {"status": shadow_status, "reason": str(cw.get("reason") or shadow_status), "fill_amount": fill, "ev": ev, "equity": sm.get("shadow_equity_usdc"), "conditions": shadow}, "source": "current_window.json + derived"}
+    return {"ok": True, "window_id": wid, "window_label": window_label(wid), "seq": item_seq(cw), "prefix": item_seq(cw), "T_remaining": T, "td": td, "trigger_direction": td, "trigger_direction_label": trigger_label, "best_dir": best_dir, "best_dir_label": dir_label, "decision_mode": direction_mode, "evaluated_direction": best_dir, "evaluated_direction_label": dir_label, "evaluated_ask": ask, "ask_up": ask_up, "ask_down": ask_down, "best_ev": ev, "real": {"status": real_status, "reason": reason, "target_quote": real_target, "target_shares": shares, "conditions": real}, "shadow": {"status": shadow_status, "reason": str(cw.get("reason") or shadow_status), "fill_amount": fill, "ev": ev, "equity": sm.get("shadow_equity_usdc"), "conditions": shadow}, "source": "current_window.json + derived"}
 
 
 def create_app(*, root: Path, password: Optional[str] = None) -> Flask:
