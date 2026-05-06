@@ -690,13 +690,14 @@ class LiveRunner:
         global _SIM_FILLED, _REAL_FILLED, _SIM_CURRENT
         global _SIM_WIN_BUDGET, _SIM_WIN_DIR, _REAL_WIN_BUDGET, _REAL_WIN_DIR
         window_id = str(event.get("window_id") or "")
-        # 影子/真实盘各自独立的锁仓/预算/方向
+        # 真实盘是否活跃
         is_real_mode = (not self.cfg.dry_run_signals and not self.cfg.record_shadow_signals
                         and self.poly_client and self.market_resolver
                         and self.cfg.runtime.enable_real_orders)
-        filled_set = _REAL_FILLED if is_real_mode else _SIM_FILLED
-        win_budget = _REAL_WIN_BUDGET if is_real_mode else _SIM_WIN_BUDGET
-        win_dir = _REAL_WIN_DIR if is_real_mode else _SIM_WIN_DIR
+        # 影子盘始终用自己的状态 (不受实盘影响)
+        filled_set = _SIM_FILLED   # 影子盘锁仓
+        win_budget = _SIM_WIN_BUDGET  # 影子盘预算
+        win_dir = _SIM_WIN_DIR     # 影子盘方向
         p_rev = float(event.get("p_rev_lower") or event.get("p_rev") or 0.3)
         t_rem = float(event.get("t_remaining_sec") or 0)
         trig = event.get("trigger_pattern", "")
