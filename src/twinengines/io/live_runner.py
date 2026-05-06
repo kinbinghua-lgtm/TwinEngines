@@ -952,7 +952,7 @@ class LiveRunner:
             return
 
         err = str(ticket.last_error or "").lower()
-        if ticket.state in _REAL_RETRYABLE_STATES and ("fok_no_fill" in err or "not_fill" in err or "not filled" in err):
+        if ticket.state in _REAL_RETRYABLE_STATES and ("fok_no_fill" in err or "not_fill" in err or "not filled" in err or "fully filled" in err):
             return
         if ticket.state == OrderState.DRY_RUN_SHADOW:
             state["locked"] = True
@@ -1490,6 +1490,12 @@ class LiveRunner:
                 if self.store is not None:
                     self.store.append_audit("order_failed", {
                         "window_id": window_id,
+                        "side": side,
+                        "direction": direction,
+                        "size_usdc": ticket.size_quote_usdc,
+                        "price": ticket.price,
+                        "exchange_order_id": ticket.exchange_order_id,
+                        "client_order_id": client_order_id,
                         "state": ticket.state.value,
                         "error": ticket.last_error,
                     })

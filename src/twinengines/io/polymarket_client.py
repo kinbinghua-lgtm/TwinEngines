@@ -115,6 +115,16 @@ def _round_buy_size_for_quote_cents(*, price: float, raw_size: float, min_sz: fl
         cents += 1
     return _round_order_size_shares_up(target, min_sz)
 
+def _is_fok_no_fill_error(err: str) -> bool:
+    msg = (err or "").lower()
+    return (
+        "fok_order_not_filled_error" in msg
+        or "not filled" in msg
+        or "couldn't be fully filled" in msg
+        or "could not be fully filled" in msg
+        or "fully filled or killed" in msg
+    )
+
 def _http_get_json(url: str, *, timeout: float, user_agent: str) -> Any:
     req = urllib.request.Request(
         url,
@@ -769,7 +779,7 @@ class PolymarketClient:
             except Exception as e:
                 err = str(e)
                 logger.warning("FOK post_order exception: %s coid=%s", err, ticket.client_order_id)
-                if "FOK_ORDER_NOT_FILLED_ERROR" in err or "not filled" in err.lower():
+                if _is_fok_no_fill_error(err):
                     ticket.state = OrderState.REJECTED
                     ticket.last_error = "fok_no_fill"
                 else:
@@ -783,7 +793,7 @@ class PolymarketClient:
                 err_msg = str(result_fok.get("errorMsg") or result_fok.get("error") or "")
                 if success is False:
                     ticket.state = OrderState.REJECTED
-                    if "FOK_ORDER_NOT_FILLED_ERROR" in err_msg or "not filled" in err_msg.lower():
+                    if _is_fok_no_fill_error(err_msg):
                         ticket.last_error = "fok_no_fill"
                     else:
                         ticket.last_error = err_msg or "fok_rejected"
