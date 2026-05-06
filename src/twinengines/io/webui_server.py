@@ -240,6 +240,8 @@ def summary_payload(root: Path) -> dict[str, Any]:
 
 def current_decision_payload(root: Path) -> dict[str, Any]:
     cw = read_json(root / "data_runtime" / "current_window.json") or {}; sm = summary_payload(root); wid = str(cw.get("window_id") or "")
+    seq = item_seq(cw); seq_total = int(os.environ.get("WEBUI_SEQ_TOTAL", "3")); seq_display = (seq + "·" * max(0, seq_total - len(seq)))[:seq_total] if seq else "·" * seq_total
+    filled = next((x for x in audit_rows(root, ("order_filled",), 80) if str(x.get("window_id") or "") == wid), None)
     T = safe_float(cw.get("T") or cw.get("T_remaining") or cw.get("t_remaining_sec")); best_dir = str(cw.get("best_dir") or "").lower(); td = str(cw.get("td") or cw.get("trigger_direction") or "").lower()
     trend_dir = td if td in ("up", "down") else ""; rev_dir = "down" if trend_dir == "up" else "up" if trend_dir == "down" else ""
     dir_label = best_dir.upper() if best_dir else "未确定"; trigger_label = td.upper() if td else "无"; trend_label = trend_dir.upper() if trend_dir else "未确定"; rev_label = rev_dir.upper() if rev_dir else "未确定"; direction_mode = "反转" if best_dir and rev_dir and best_dir == rev_dir else ("顺势" if best_dir and trend_dir and best_dir == trend_dir else "未确定")
@@ -260,12 +262,13 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     ]
     fail = next((x for x in real if x["status"] == "fail"), None)
     if real_status == "real_fok_evaluated": reason = "已进入真实 FOK 下单评估，等待订单审计确认"
+    elif filled: reason = "真实 FOK 已成交"
     elif T is not None and T < 5: reason = "未提交：当前窗口剩余时间少于 5 秒"
     elif "Kelly<2.5" in real_status: reason = "未提交：建议下注金额低于 $2.50，或账户余额/cap 不足"
     else: reason = f"未提交：{fail['label']}未通过" if fail else f"未提交：{real_status}"
     fill = safe_float(cw.get("fill_amt") or cw.get("fill_amount")); shadow_status = str(cw.get("status") or "等待")
     shadow = [c("time","时间条件","pass" if T is not None and T >= 5 else "fail", f"T={T:.0f}s >= 5s" if T is not None else "无数据"), c("ev","EV 条件","pass" if ev is not None and ev >= ev_min else "fail", f"EV={ev if ev is not None else '--'}，阈值={ev_min:.2f}"), c("kelly","模拟 Kelly 条件","pass" if fill and fill >= 2.5 else "warn", f"影子 fill={fill if fill is not None else '--'}")]
-    return {"ok": True, "window_id": wid, "window_label": window_label(wid), "seq": item_seq(cw), "prefix": item_seq(cw), "T_remaining": T, "server_ts_ms": int(time.time() * 1000), "td": td, "trigger_direction": td, "trigger_direction_label": trigger_label, "trend_direction": trend_dir, "trend_direction_label": trend_label, "reversal_direction": rev_dir, "reversal_direction_label": rev_label, "ev_trend": ev_trend, "ev_rev": ev_rev, "best_dir": best_dir, "best_dir_label": dir_label, "decision_mode": direction_mode, "evaluated_direction": best_dir, "evaluated_direction_label": dir_label, "evaluated_ask": ask, "ask_up": ask_up, "ask_down": ask_down, "best_ev": ev, "real": {"status": real_status, "reason": reason, "target_quote": real_target, "target_shares": shares, "conditions": real}, "shadow": {"status": shadow_status, "reason": str(cw.get("reason") or shadow_status), "fill_amount": fill, "ev": ev, "equity": sm.get("shadow_equity_usdc"), "conditions": shadow}, "source": "current_window.json + derived"}
+    return {"ok": True, "window_id": wid, "window_label": window_label(wid), "seq": seq, "seq_display": seq_display, "seq_total": seq_total, "prefix": seq, "T_remaining": T, "server_ts_ms": int(time.time() * 1000), "td": td, "trigger_direction": td, "trigger_direction_label": trigger_label, "trend_direction": trend_dir, "trend_direction_label": trend_label, "reversal_direction": rev_dir, "reversal_direction_label": rev_label, "ev_trend": ev_trend, "ev_rev": ev_rev, "best_dir": best_dir, "best_dir_label": dir_label, "decision_mode": direction_mode, "evaluated_direction": best_dir, "evaluated_direction_label": dir_label, "evaluated_ask": ask, "ask_up": ask_up, "ask_down": ask_down, "best_ev": ev, "real": {"status": real_status, "reason": reason, "target_quote": real_target, "target_shares": shares, "filled_order": filled, "conditions": real}, "shadow": {"status": shadow_status, "reason": str(cw.get("reason") or shadow_status), "fill_amount": fill, "ev": ev, "equity": sm.get("shadow_equity_usdc"), "conditions": shadow}, "source": "current_window.json + derived"}
 
 
 def create_app(*, root: Path, password: Optional[str] = None) -> Flask:
