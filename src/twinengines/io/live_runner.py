@@ -396,17 +396,15 @@ class LiveRunner:
                 best_bid = float(book.get("best_bid") or 0)
                 if best_bid >= 0.99:
                     size = float(book.get("best_bid_size") or 0)
-                    amount = pos.get("amount", 0)
-                    sell_sz = min(amount / best_bid, size) if best_bid > 0 else 0
+                    amount = pos.get("amount", 0)  # number of shares
+                    sell_sz = min(amount, size)
                     if sell_sz > 0:
-                        self.poly_client.place_order(
-                            token_id=token_id, side="sell", quantity=sell_sz,
-                            price=best_bid, order_type="FOK")
+                        self.submit_signal_order(
+                            window_id=window_id, side="REVERSAL", direction=pos.get("dir", ""),
+                            size_quote_usdc=sell_sz * best_bid, limit_price=best_bid,
+                            note="0.99_auto_settle")
                         logger.info("0.99 auto-settle: sold window=%s token=%s sz=%.2f bid=%.2f",
                                     window_id, token_id, sell_sz, best_bid)
-                        self.store.append_audit("auto_settle_99", {
-                            "window_id": window_id, "token_id": token_id,
-                            "amount": amount, "bid": best_bid, "sold_sz": sell_sz})
                     self._monitor_positions.pop(window_id, None)
             except Exception:
                 pass
