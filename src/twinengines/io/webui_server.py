@@ -214,6 +214,26 @@ def calc_stats(items: list[dict[str, Any]], *, real_balance: Optional[float] = N
     amts = [item_amt(x) for x in items if item_amt(x) is not None]
     return {"count": len(items), "settled_count": len(settled), "wins": wins, "losses": len(settled)-wins, "win_rate": wins/len(settled) if settled else None, "total_pnl": sum(pnls) if pnls else 0.0, "avg_pnl": sum(pnls)/len(pnls) if pnls else None, "avg_amount": sum(amts)/len(amts) if amts else None, "real_balance_usdc": real_balance, "shadow_equity_usdc": shadow_equity}
 
+def coverage_stats(root: Path, args: Any, result_items: list[dict[str, Any]]) -> dict[str, Any]:
+    now = int(time.time() * 1000); rg = str(args.get("range") or "6h")
+    start = range_cutoff(rg)
+    if start is None:
+        ts_list = [item_ts(x) for x in result_items if item_ts(x)]
+        start = min(ts_list) if ts_list else REAL_RESULTS_CUTOFF_TS_MS
+    if str(args.get("include_old") or "0") not in ("1", "true", "yes"):
+        start = max(start, REAL_RESULTS_CUTOFF_TS_MS)
+    if str(args.get("window_id") or "").strip():
+        total_windows = 1
+    else:
+        total_windows = max(1, int((now - start) / 300_000) + 1)
+    orders = audit_rows(root, ("order_filled", "order_failed"), 5000)
+    orders = filter_items(orders, args)
+    if str(args.get("include_old") or "0") not in ("1", "true", "yes"):
+        orders = [x for x in orders if (item_ts(x) or 0) >= REAL_RESULTS_CUTOFF_TS_MS]
+    windows = {str(x.get("window_id") or "") for x in orders if x.get("window_id")}
+    covered = len(windows)
+    return {"coverage_windows": covered, "coverage_total_windows": total_windows, "coverage_rate": covered / total_windows if total_windows else None, "coverage_start_ts_ms": start, "coverage_end_ts_ms": now}
+
 def summary_payload(root: Path) -> dict[str, Any]:
     real = read_json(root / "data_runtime" / "real_balance.json") or {}; real_ok = bool(real.get("ok"))
     return {"ok": True, "real_balance_usdc": safe_float(real.get("balance_usdc")) if real_ok else None, "real_pending_redeem_usdc": safe_float(real.get("pending_redeem")) if real_ok else None, "real_redeem_ok": real.get("redeem_ok") if real else None, "shadow_equity_usdc": read_float(root / "data_runtime" / "sim_equity.txt")}
@@ -284,8 +304,8 @@ def create_app(*, root: Path, password: Optional[str] = None) -> Flask:
     @app.route("/api/real/results")
     def real_results():
         n = int(request.args.get("n", request.args.get("limit", "20"))); off = int(request.args.get("offset", "0"))
-        raw = read_jsonl(root / "logs" / "real_results.jsonl", max(3000, n + off + 100)); items = filter_items(raw, request.args, real_cutoff=True); sm = summary_payload(root)
-        return jsonify({"ok": True, "items": items[off:off+n], "stats": calc_stats(items, real_balance=sm.get("real_balance_usdc")), "source": "logs/real_results.jsonl", "cutoff_ts_ms": REAL_RESULTS_CUTOFF_TS_MS, "old_data_filtered": str(request.args.get("include_old") or "0") not in ("1", "true", "yes")})
+        raw = read_jsonl(root / "logs" / "real_results.jsonl", max(3000, n + off + 100)); items = filter_items(raw, request.args, real_cutoff=True); sm = summary_payload(root); st = calc_stats(items, real_balance=sm.get("real_balance_usdc")); st.update(coverage_stats(root, request.args, items))
+        return jsonify({"ok": True, "items": items[off:off+n], "stats": st, "source": "logs/real_results.jsonl", "cutoff_ts_ms": REAL_RESULTS_CUTOFF_TS_MS, "old_data_filtered": str(request.args.get("include_old") or "0") not in ("1", "true", "yes")})
 
     @app.route("/api/shadow/orders")
     def shadow_orders():

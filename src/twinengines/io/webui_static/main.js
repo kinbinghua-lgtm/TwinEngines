@@ -9,7 +9,8 @@ function qs(box){return [...document.querySelectorAll(`#${box} [name]`)].map(i=>
 function clsPnl(v){return Number(v||0)>=0?'ok':'bad'}
 function wonText(v){return v===true?'<span class="ok">赢</span>':v===false?'<span class="bad">输</span>':'<span class="unknown">--</span>'}
 function rows(id,a,f,col=9){$(id).innerHTML=a&&a.length?a.map(f).join(''):`<tr><td colspan="${col}" class="muted">暂无数据</td></tr>`}
-function stat(prefix,s){$(`${prefix}-count`).textContent=s.count??0;$(`${prefix}-wr`).textContent=pct(s.win_rate);$(`${prefix}-pnl`).textContent=money(s.total_pnl);$(`${prefix}-avgpnl`).textContent=money(s.avg_pnl);$(`${prefix}-avgamt`).textContent=money(s.avg_amount)}
+function setText(id,v){const e=$(id);if(e)e.textContent=v}
+function stat(prefix,s){setText(`${prefix}-count`,s.count??0);setText(`${prefix}-wr`,pct(s.win_rate));setText(`${prefix}-pnl`,money(s.total_pnl));setText(`${prefix}-avgpnl`,money(s.avg_pnl));setText(`${prefix}-avgamt`,money(s.avg_amount))}
 function conds(id,a){$(id).innerHTML=(a||[]).map(x=>`<div class="cond"><b>${esc(x.label)}</b><span class="${esc(x.status)}">${esc(x.status)}</span><span>${esc(x.text)}</span></div>`).join('')||'<div class="muted">暂无条件数据</div>'}
 async function loadLive(){
   const [sum,cw,dec,ver,st]=await Promise.all([api('/api/summary'),api('/api/current_window'),api('/api/current_decision'),api('/api/version'),api('/api/strategy/status')]);
@@ -21,7 +22,7 @@ async function loadLive(){
 }
 async function controlStrategy(action){const msg=$('strategy-msg');$('btn-start').disabled=true;$('btn-stop').disabled=true;msg.textContent=action==='start'?'正在启动...':'正在暂停...';try{const j=await api('/api/strategy/'+action,{method:'POST'});msg.textContent=j.ok?(action==='start'?'已启动/启动请求完成':'已暂停/暂停请求完成'):'失败：'+(j.error||j.reason||'unknown');await loadLive()}catch(e){msg.textContent='失败：'+e}}
 async function loadReal(){
-  const [r,o]=await Promise.all([api('/api/real/results?limit=20&'+qs('real-filters')),api('/api/real/orders?limit=20&'+qs('real-filters'))]);const s=r.stats||{};stat('real',s);$('real-bal').textContent=money(s.real_balance_usdc);
+  const [r,o]=await Promise.all([api('/api/real/results?limit=20&'+qs('real-filters')),api('/api/real/orders?limit=20&'+qs('real-filters'))]);const s=r.stats||{};stat('real',s);$('real-bal').textContent=money(s.real_balance_usdc);$('real-coverage').textContent=pct(s.coverage_rate);$('real-coverage-sub').textContent=`${s.coverage_windows??0}/${s.coverage_total_windows??0} 个5分钟窗口`;
   rows('real-results',r.items,x=>`<tr><td><div>${ts(x.ts_ms)}</div><div class="mono muted">${esc(x.window_id)}</div></td><td class="mono">${esc(x.seq||'')}</td><td>${esc((x.direction||x.dir||'').toUpperCase())}</td><td class="right">${money(x.amount||x.fill_amt)}</td><td class="right ${clsPnl(x.pnl)}">${money(x.pnl)}</td><td>${wonText(x.won)}</td><td class="right">${money(x.real_balance_usdc||x.balance_usdc||x.equity)}</td></tr>`,7);
   rows('real-orders',o.items,x=>`<tr><td>${ts(x.ts_ms)}</td><td>${esc(x.kind)}</td><td class="mono">${esc(x.window_id||'')}</td><td>${esc((x.direction||x.side||'').toUpperCase())}</td><td>${money(x.size_usdc||x.amount)}</td><td>${esc(x.error||x.last_error||x.state||x.status||'')}</td><td class="mono">${esc(String(x.client_order_id||x.exchange_order_id||'').slice(-28))}</td></tr>`,7);
 }
@@ -35,4 +36,6 @@ async function loadAll(){try{await Promise.all([loadLive(),loadReal(),loadShadow
 function pageFromPath(){const p=location.pathname.replace('/','')||'live';return ['real','shadow','logs'].includes(p)?p:'live'}
 function setPage(p){document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.page===p));document.querySelectorAll('.sec').forEach(s=>s.classList.toggle('active',s.id===p));history.replaceState(null,'',p==='live'?'/':'/'+p)}
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>setPage(b.dataset.page));
-setPage(pageFromPath());loadAll();setInterval(loadLive,5000);
+document.querySelectorAll('#real-filters input,#real-filters select').forEach(el=>{el.addEventListener('change',loadReal);el.addEventListener('input',()=>{clearTimeout(window.__realFilterTimer);window.__realFilterTimer=setTimeout(loadReal,500)})});
+document.querySelectorAll('#shadow-filters input,#shadow-filters select').forEach(el=>{el.addEventListener('change',loadShadow);el.addEventListener('input',()=>{clearTimeout(window.__shadowFilterTimer);window.__shadowFilterTimer=setTimeout(loadShadow,500)})});
+setPage(pageFromPath());loadAll();setInterval(()=>{loadLive(); if(pageFromPath()==='real')loadReal();},5000);
