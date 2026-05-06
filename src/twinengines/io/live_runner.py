@@ -73,7 +73,6 @@ _SIM_WIN_BUDGET: dict[str, float] = {}  # 影子盘每窗口剩余 Kelly 预算
 _SIM_WIN_DIR: dict[str, str] = {}       # 影子盘每窗口首次成交方向
 _REAL_WIN_BUDGET: dict[str, float] = {} # 真实盘每窗口剩余 Kelly 预算 (独立于影子)
 _REAL_WIN_DIR: dict[str, str] = {}      # 真实盘每窗口首次成交方向
-_REAL_FOK_SENT: set[str] = set()        # 真实盘本窗口已发过 FOK (防重复下单)
 
 @dataclass
 class LiveRunnerCfg:
@@ -566,10 +565,9 @@ class LiveRunner:
             return None
 
     def _on_shadow_window_close(self, window_id: str) -> None:
-        global _SIM_FILLED, _REAL_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR, _REAL_WIN_BUDGET, _REAL_WIN_DIR, _REAL_FOK_SENT
+        global _SIM_FILLED, _REAL_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR, _REAL_WIN_BUDGET, _REAL_WIN_DIR
         _SIM_FILLED.discard(window_id)
         _REAL_FILLED.discard(window_id)
-        _REAL_FOK_SENT.discard(window_id)
         _SIM_WIN_BUDGET.pop(window_id, None)
         _SIM_WIN_DIR.pop(window_id, None)
         _REAL_WIN_BUDGET.pop(window_id, None)
@@ -679,7 +677,7 @@ class LiveRunner:
 
     def _simulate_order_from_signal(self, event: dict) -> None:
         global _SIM_FILLED, _REAL_FILLED, _SIM_CURRENT
-        global _SIM_WIN_BUDGET, _SIM_WIN_DIR, _REAL_WIN_BUDGET, _REAL_WIN_DIR, _REAL_FOK_SENT
+        global _SIM_WIN_BUDGET, _SIM_WIN_DIR, _REAL_WIN_BUDGET, _REAL_WIN_DIR
         window_id = str(event.get("window_id") or "")
         # 影子/真实盘各自独立的锁仓/预算/方向
         is_real_mode = (not self.cfg.dry_run_signals and not self.cfg.record_shadow_signals
@@ -822,13 +820,8 @@ class LiveRunner:
         elif single < 2.50:
             single = 2.50       # 预算够但深度薄, 保底 $2.50
 
-        # 真实盘: 本窗已发过 FOK → 不重复下单
-        if is_real_mode and window_id in _REAL_FOK_SENT:
-            _SIM_CURRENT["status"] = "filled"; return
-
-        # 真实盘: 先提交 FOK, 被拒则跳过 (不扣预算, 等下一信号重试)
+        # 真实盘: 先提交 FOK, 用 Polymarket API 验证是否成交
         if is_real_mode:
-            _REAL_FOK_SENT.add(window_id)  # 防重复下单
             try:
                 active = self.market_resolver.get_active()
                 if active:
@@ -839,15 +832,26 @@ class LiveRunner:
                         window_id=window_id, side=side_label, direction=best_dir,
                         size_quote_usdc=single, limit_price=round(limit_px, 4),
                         note=f"ev={best_ev:.3f} kelly={kelly_total:.2f}")
-                    filled_shares = float(getattr(ticket, 'filled_size_shares', 0) or 0)
-                    if filled_shares < 1e-9:
-                        # FOK 被拒 → 不扣预算, 等下一秒再试. 不改 _SIM_CURRENT (影子面板不受影响)
+                    # 查 Polymarket 确认成交 (不依赖本地 ticket.filled_size_shares)
+                    oid = getattr(ticket, 'exchange_order_id', None) or getattr(ticket, 'client_order_id', None)
+                    filled_ok = False
+                    if oid and hasattr(self.poly_client, '_real_client'):
+                        try:
+                            order_info = self.poly_client._real_client.get_order(oid)
+                            status = str(order_info.get("status") or "").upper()
+                            filled_size = float(order_info.get("filled_size") or order_info.get("filledSize") or 0)
+                            if status in ("FILLED", "PARTIAL", "MATCHED") or filled_size > 1e-9:
+                                filled_ok = True
+                        except Exception:
+                            pass
+                    if not filled_ok:
+                        # 链上也查不到 = 真没成交 → 等下一秒再试
                         self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0,
                                                "rejected", "FOK_depth_insufficient", d_abs)
                         return
             except Exception as e:
                 logger.warning("real order submit failed: %s", e)
-                return  # 下单异常也不扣预算
+                return
 
         # 扣减预算 (影子盘直接扣; 真实盘通过 FOK 检查才到这里)
         win_budget[window_id] = remaining - single
