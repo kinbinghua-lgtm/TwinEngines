@@ -334,7 +334,7 @@ class LiveRunner:
             position_lock=self.position_lock,
             cfg=ReconcilerCfg(
                 interval_sec=_rec_interval,
-                observe_only=bool(self.cfg.dry_run_signals or self.cfg.record_shadow_signals),
+                observe_only=True,  # 实盘不因对账差异熔断 (避免误杀)
                 position_size_drift_usdc=float(runtime.reconcile_untracked_drift_usdc),
             ),
             store=self.store,
