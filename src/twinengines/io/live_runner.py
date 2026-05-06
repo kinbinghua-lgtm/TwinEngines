@@ -1025,19 +1025,76 @@ class LiveRunner:
                 "unknown_outcome": False,
                 "attempt_in_flight": False,
                 "attempt_seq": 0,
+                "total_attempts": 0,
+                "switch_count": 0,
                 "created_ts_ms": int(time.time() * 1000),
             }
             _REAL_WINDOW_ORDERS[window_id] = state
         elif best_dir != state.get("direction"):
-            state["locked"] = True
-            state["lock_reason"] = "reverse_signal"
-            logger.warning(
-                "real window reverse lock window_id=%s new=%s old=%s",
-                window_id, best_dir, state.get("direction"),
+            filled_shares = float(state.get("filled_shares", 0.0) or 0.0)
+            unknown_outcome = bool(state.get("unknown_outcome"))
+            attempt_in_flight = bool(state.get("attempt_in_flight"))
+            switch_count = int(state.get("switch_count", 0) or 0)
+            total_attempts = int(state.get("total_attempts", state.get("attempt_seq", 0)) or 0)
+            can_switch = (
+                filled_shares <= 1e-9
+                and not unknown_outcome
+                and not attempt_in_flight
+                and switch_count < 1
+                and total_attempts < 3
             )
-            return None
+            if can_switch:
+                old_dir = str(state.get("direction") or "")
+                target_shares = float(target_quote) / max(float(limit_price), 0.01)
+                if target_shares + 1e-9 < min_shares:
+                    logger.info(
+                        "real window switch skip below min shares window_id=%s old=%s new=%s shares=%.4f",
+                        window_id, old_dir, best_dir, target_shares,
+                    )
+                    return None
+                state = {
+                    "window_id": window_id,
+                    "direction": best_dir,
+                    "side_label": side_label,
+                    "token_id": token_id,
+                    "target_quote": float(target_quote),
+                    "target_shares": float(target_shares),
+                    "filled_shares": 0.0,
+                    "remaining_shares": float(target_shares),
+                    "limit_price": float(limit_price),
+                    "locked": False,
+                    "lock_reason": None,
+                    "unknown_outcome": False,
+                    "attempt_in_flight": False,
+                    "attempt_seq": 0,
+                    "total_attempts": total_attempts,
+                    "switch_count": switch_count + 1,
+                    "previous_direction": old_dir,
+                    "created_ts_ms": int(time.time() * 1000),
+                    "switched_ts_ms": int(time.time() * 1000),
+                }
+                _REAL_WINDOW_ORDERS[window_id] = state
+                logger.info(
+                    "real window direction switch allowed window_id=%s old=%s new=%s attempts=%s switches=%s",
+                    window_id, old_dir, best_dir, total_attempts, switch_count + 1,
+                )
+            else:
+                state["locked"] = True
+                state["lock_reason"] = "reverse_signal"
+                logger.warning(
+                    "real window reverse lock window_id=%s new=%s old=%s filled=%.4f unknown=%s in_flight=%s switches=%s attempts=%s",
+                    window_id, best_dir, state.get("direction"), filled_shares, unknown_outcome,
+                    attempt_in_flight, switch_count, total_attempts,
+                )
+                return None
 
         if state.get("locked") or state.get("unknown_outcome") or state.get("attempt_in_flight"):
+            return None
+
+        if int(state.get("total_attempts", state.get("attempt_seq", 0)) or 0) >= 3:
+            state["locked"] = True
+            state["lock_reason"] = "max_fok_attempts"
+            logger.info("real window max FOK attempts reached window_id=%s attempts=%s", window_id, state.get("total_attempts"))
             return None
 
         remaining_shares = float(state.get("remaining_shares", 0.0))
@@ -1048,6 +1105,7 @@ class LiveRunner:
             return None
 
         state["attempt_seq"] = int(state.get("attempt_seq", 0)) + 1
+        state["total_attempts"] = int(state.get("total_attempts", 0)) + 1
         state["attempt_in_flight"] = True
         client_order_id = f"{window_id}:{state['direction']}:fok:{state['attempt_seq']}"
         state["last_client_order_id"] = client_order_id
