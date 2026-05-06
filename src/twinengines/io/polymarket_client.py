@@ -96,7 +96,7 @@ class OrderTicket:
 # ============================================================
 
 def _tick_round(price: float, tick: float = 0.01) -> float:
-    return math.floor(price / tick) * tick
+    return round(math.floor(price / tick + 1e-9) * tick, 4)
 
 def _round_order_size_shares_up(raw_size: float, min_sz: float) -> float:
     """CLOB 对手数量精度（常见限制 taker 最多 4 位小数）；向上取整避免名义不足。"""
@@ -808,7 +808,7 @@ class PolymarketClient:
         try:
             from py_clob_client_v2.clob_types import OrderArgsV2, OrderType  # type: ignore
 
-            limit_price = max(0.01, float(ticket.price))
+            limit_price = round(max(0.01, float(ticket.price)), 4)
             if ticket.size_shares is not None and float(ticket.size_shares) > 0:
                 raw_size = float(ticket.size_shares)
             else:
@@ -877,6 +877,9 @@ class PolymarketClient:
                 ticket, delay_ms=int(self.runtime_cfg.order_ghost_confirm_delay_ms),
             )
             matched = float(ticket.filled_size_shares or 0.0)
+            if ticket.state == OrderState.SUBMITTED:
+                self.refresh_order_truth(ticket, delay_ms=1200)
+                matched = float(ticket.filled_size_shares or 0.0)
             if ticket.state == OrderState.FILLED and matched > 1e-9:
                 logger.info(
                     "FOK filled size=%.4f price=%.4f oid=%s coid=%s",
@@ -900,8 +903,9 @@ class PolymarketClient:
                 ticket.release_margin()
                 return
 
+            prev_state = ticket.state.value
             ticket.state = OrderState.TIMEOUT
-            ticket.last_error = "unknown_after_order_query"
+            ticket.last_error = f"unknown_after_order_query:{prev_state}:matched={matched:.4f}"
             ticket.release_margin()
         except Exception as e:
             err_msg = str(e)
