@@ -55,6 +55,13 @@ async function loadAnalytics(){
   rows('ana-shadow-mode-price',sb.by_mode_price||[],bucketRow,7);
   rows('ana-shadow-time',sb.by_time||[],bucketRowShort,6);
   rows('ana-shadow-prefix',sb.by_prefix||[],bucketRowShort,6);
+  const rej=a.rejected||{};
+  const rejSummary=x=>`<tr><td>${esc(x.key)}</td><td class="right">${esc(x.raw_count??0)}</td><td class="right">${esc(x.window_count??0)}</td><td class="right">${pct(x.cf_win_rate)}</td><td class="right ${clsPnl(x.cf_pnl)}">${money(x.cf_pnl)}</td><td class="right">${num(x.avg_price,4)}</td><td class="right">${num(x.avg_ev,3)}</td><td class="right">${num(x.avg_d_abs_pct,4)}</td></tr>`;
+  const rejShort=x=>`<tr><td>${esc(x.key)}</td><td class="right">${esc(x.raw_count??0)}</td><td class="right">${esc(x.window_count??0)}</td><td class="right">${pct(x.cf_win_rate)}</td><td class="right ${clsPnl(x.cf_pnl)}">${money(x.cf_pnl)}</td><td class="right">${num(x.avg_price,4)}</td></tr>`;
+  rows('ana-rej-summary',rej.summary||[],rejSummary,8);
+  rows('ana-rej-reason-price',rej.by_reason_price||[],rejShort,6);
+  rows('ana-rej-reason-prefix',rej.by_reason_prefix||[],rejShort,6);
+  rows('ana-rej-candidates',rej.candidates||[],x=>`<tr><td><div>${ts(x.ts_ms)}</div><div class="mono muted">${esc(x.window_id||'')}</div></td><td>${esc(x.reason||'')}</td><td class="mono">${esc(x.prefix||'')}</td><td>${esc(x.mode||'')}</td><td>${esc((x.direction||'').toUpperCase())}/${esc((x.actual_dir||'--').toUpperCase())}</td><td class="right">${num(x.price,4)}</td><td class="right">${num(x.best_ev,3)}</td><td class="right">${num(x.d_abs_pct,4)}</td><td class="right ${clsPnl(x.cf_pnl_2p5)}">${money(x.cf_pnl_2p5)}</td></tr>`,9);
 }
 async function loadAll(){try{await Promise.all([loadLive(),loadReal(),loadShadow(),loadAnalytics(),loadLogs()])}catch(e){$('health').textContent='异常 '+e;$('health').className='pill bad'}}
 function pageFromPath(){const p=location.pathname.replace('/','')||'live';return ['real','shadow','analytics','logs'].includes(p)?p:'live'}

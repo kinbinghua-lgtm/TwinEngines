@@ -350,6 +350,109 @@ def _group_shadow_orders(orders: list[dict[str, Any]], results: list[dict[str, A
         return (-int(x.get("count") or 0), str(x.get("key") or ""))
     return sorted(out, key=sort_key)
 
+def _reason_group(reason: Any) -> str:
+    s = str(reason or "unknown")
+    if s.startswith("R:d>"): return "R:d>d_cliff"
+    if s.startswith("R:p<"): return "R:p<p_min"
+    if s.startswith("EV<"): return "EV<threshold"
+    if "Kelly<" in s: return "Kelly<min"
+    if "depth" in s: return "depth_insufficient"
+    return s[:80]
+
+def _opposite_dir(direction: str) -> str:
+    d = str(direction or "").lower()
+    return "down" if d == "up" else "up" if d == "down" else ""
+
+def _actual_dir_from_result(result: Optional[dict[str, Any]]) -> str:
+    if not result:
+        return ""
+    seq = str(result.get("seq") or "")
+    if len(seq) >= 5 and seq[-1] in ("0", "1"):
+        return "up" if seq[-1] == "1" else "down"
+    d = item_dir(result)
+    w = item_won(result)
+    if w is True:
+        return d
+    if w is False:
+        return _opposite_dir(d)
+    return ""
+
+def _counterfactual_pnl(direction: str, actual_dir: str, price: Optional[float], stake: float = 2.5) -> Optional[float]:
+    if direction not in ("up", "down") or actual_dir not in ("up", "down") or price is None or price <= 0:
+        return None
+    if direction == actual_dir:
+        return float(stake) * (1.0 / float(price) - 1.0)
+    return -float(stake)
+
+def _aggregate_rejected(rows_in: list[dict[str, Any]], key_fn: Any, result_by_wid: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: dict[str, dict[str, Any]] = {}
+    seen_windows: dict[str, set[str]] = {}
+    for o in rows_in:
+        price = _shadow_price(o)
+        key = str(key_fn(o, price))
+        wid = str(o.get("window_id") or "")
+        direction = str(o.get("best_dir") or item_dir(o) or "").lower()
+        cf = _counterfactual_pnl(direction, _actual_dir_from_result(result_by_wid.get(wid)), price)
+        row = rows.setdefault(key, {"key": key, "raw_count": 0, "window_count": 0, "settled_count": 0, "cf_wins": 0, "cf_pnl": 0.0, "prices": [], "evs": [], "p_revs": [], "d_abs": []})
+        row["raw_count"] += 1
+        seen = seen_windows.setdefault(key, set())
+        if wid and wid not in seen:
+            seen.add(wid); row["window_count"] += 1
+        if price is not None: row["prices"].append(float(price))
+        ev = safe_float(o.get("best_ev"))
+        if ev is not None: row["evs"].append(float(ev))
+        pr = safe_float(o.get("p_rev_lower") or o.get("p_lower"))
+        if pr is not None: row["p_revs"].append(float(pr))
+        da = safe_float(o.get("d_abs_pct") or o.get("d_abs"))
+        if da is not None: row["d_abs"].append(float(da))
+        if cf is not None:
+            row["settled_count"] += 1
+            row["cf_pnl"] += float(cf)
+            if cf > 0: row["cf_wins"] += 1
+    out: list[dict[str, Any]] = []
+    for row in rows.values():
+        prices = row.pop("prices", []); evs = row.pop("evs", []); p_revs = row.pop("p_revs", []); d_abs = row.pop("d_abs", [])
+        settled = int(row["settled_count"])
+        row["cf_win_rate"] = row["cf_wins"] / settled if settled else None
+        row["cf_pnl_per_candidate"] = float(row["cf_pnl"]) / settled if settled else None
+        row["avg_price"] = sum(prices) / len(prices) if prices else None
+        row["avg_ev"] = sum(evs) / len(evs) if evs else None
+        row["avg_p_rev_lower"] = sum(p_revs) / len(p_revs) if p_revs else None
+        row["avg_d_abs_pct"] = sum(d_abs) / len(d_abs) if d_abs else None
+        out.append(row)
+    return sorted(out, key=lambda x: (-int(x.get("raw_count") or 0), str(x.get("key") or "")))
+
+def _first_rejected_candidates(rows_in: list[dict[str, Any]], result_by_wid: dict[str, dict[str, Any]], limit: int = 30) -> list[dict[str, Any]]:
+    picked: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for o in sorted(rows_in, key=lambda x: int(item_ts(x) or 0)):
+        wid = str(o.get("window_id") or "")
+        direction = str(o.get("best_dir") or item_dir(o) or "").lower()
+        reason = _reason_group(o.get("reason"))
+        key = (wid, direction, reason)
+        if not wid or key in picked:
+            continue
+        price = _shadow_price(o)
+        actual = _actual_dir_from_result(result_by_wid.get(wid))
+        cf = _counterfactual_pnl(direction, actual, price)
+        picked[key] = {
+            "window_id": wid,
+            "ts_ms": item_ts(o),
+            "reason": reason,
+            "prefix": str(o.get("trigger_pattern") or o.get("seq") or "")[:3],
+            "direction": direction,
+            "actual_dir": actual or None,
+            "price": price,
+            "price_bucket": _price_bucket(price),
+            "mode": _shadow_mode(o),
+            "t_bucket": _t_bucket(safe_float(o.get("T_remaining") or o.get("t_remaining_sec"))),
+            "p_rev_lower": safe_float(o.get("p_rev_lower") or o.get("p_lower")),
+            "d_abs_pct": safe_float(o.get("d_abs_pct") or o.get("d_abs")),
+            "best_ev": safe_float(o.get("best_ev")),
+            "cf_pnl_2p5": cf,
+            "cf_won": (cf > 0) if cf is not None else None,
+        }
+    return sorted(picked.values(), key=lambda x: int(x.get("ts_ms") or 0), reverse=True)[:limit]
+
 def analytics_payload(root: Path) -> dict[str, Any]:
     orders_all = audit_rows(root, (
         "order_filled", "order_failed", "order_compliance_skip",
@@ -415,6 +518,14 @@ def analytics_payload(root: Path) -> dict[str, Any]:
     mode_price_rows = _group_shadow_orders(shadow_orders_recent, shadow_recent, lambda o, p: f"{_shadow_mode(o)} / {_price_bucket(p)}")
     time_rows = _group_shadow_orders(shadow_orders_recent, shadow_recent, lambda o, p: _t_bucket(safe_float(o.get("T_remaining") or o.get("t_remaining_sec"))))
     prefix_rows = _group_shadow_orders(shadow_orders_recent, shadow_recent, lambda o, p: str(o.get("trigger_pattern") or o.get("seq") or "")[:3] or "unknown")
+
+    result_by_wid = {str(x.get("window_id") or ""): x for x in shadow_recent if x.get("window_id")}
+    rejected_recent = [x for x in shadow_orders_recent if str(x.get("status") or "").lower() == "rejected"]
+    rejected_summary = _aggregate_rejected(rejected_recent, lambda o, p: _reason_group(o.get("reason")), result_by_wid)
+    rejected_by_reason_price = _aggregate_rejected(rejected_recent, lambda o, p: f"{_reason_group(o.get('reason'))} / {_price_bucket(p)}", result_by_wid)
+    rejected_by_reason_prefix = _aggregate_rejected(rejected_recent, lambda o, p: f"{_reason_group(o.get('reason'))} / {str(o.get('trigger_pattern') or o.get('seq') or '')[:3] or 'unknown'}", result_by_wid)
+    rejected_by_mode_price = _aggregate_rejected(rejected_recent, lambda o, p: f"{_shadow_mode(o)} / {_price_bucket(p)}", result_by_wid)
+    rejected_candidates = _first_rejected_candidates(rejected_recent, result_by_wid, limit=40)
     return {
         "ok": True,
         "orders": {
@@ -449,6 +560,15 @@ def analytics_payload(root: Path) -> dict[str, Any]:
             "by_mode_price": mode_price_rows,
             "by_time": time_rows,
             "by_prefix": prefix_rows,
+        },
+        "rejected": {
+            "raw_count": len(rejected_recent),
+            "summary": rejected_summary,
+            "by_reason_price": rejected_by_reason_price,
+            "by_reason_prefix": rejected_by_reason_prefix,
+            "by_mode_price": rejected_by_mode_price,
+            "candidates": rejected_candidates,
+            "note": "counterfactual uses $2.50 stake and only windows with known settlement result",
         },
         "core_logic": {
             "survival": "prefix-specific dynamic lambda0 -> calibrated p_rev_lower",
