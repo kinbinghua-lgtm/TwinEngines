@@ -1250,6 +1250,14 @@ class LiveRunner:
 
     # ---------------- 业务接口 ----------------
 
+    def _reconcile_window_order_flags_from_exchange(self) -> None:
+        """Compatibility hook for legacy persisted window-order flags."""
+        return
+
+    def _clear_window_order_flag(self, *, window_id: str, clear_window_done: bool = False) -> None:
+        """Compatibility hook for legacy window-order flags; current FOK state is in memory."""
+        return
+
     def submit_signal_order(
         self,
         *,
