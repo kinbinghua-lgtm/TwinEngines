@@ -16,11 +16,17 @@ async function loadAll() {
     if (cw.ok) {
       setText('cw-seq', cw.prefix || '-');
       setText('cw-T', cw.T != null ? Math.round(cw.T) + 's' : '-');
+      setText('cw-au', cw.ask_up != null ? cw.ask_up.toFixed(3) : '-');
+      setText('cw-ad', cw.ask_down != null ? cw.ask_down.toFixed(3) : '-');
       setText('cw-d', cw.d_abs != null ? cw.d_abs.toFixed(4) : '-');
       setText('cw-pl', cw.p_lower != null ? cw.p_lower.toFixed(3) : '-');
       setText('cw-evr', cw.ev_rev != null ? cw.ev_rev.toFixed(4) : '-');
       setText('cw-evt', cw.ev_trend != null ? cw.ev_trend.toFixed(4) : '-');
       setText('cw-dir', cw.best_dir ? cw.best_dir.toUpperCase() : '-');
+      setText('cw-rd', cw.r_d_ok !== undefined ? (cw.r_d_ok ? 'OK' : 'NO') : '-');
+      setText('cw-rp', cw.r_p_ok !== undefined ? (cw.r_p_ok ? 'OK' : 'NO') : '-');
+      setClass('cw-rd', cw.r_d_ok ? 'pos' : 'neg');
+      setClass('cw-rp', cw.r_p_ok ? 'pos' : 'neg');
 
       // Status
       var st = cw.status || '';
