@@ -649,6 +649,15 @@ class LiveRunner:
                         if _f.read(1) != b"\n":
                             _f.write(b"\n")
                     _f.write((res + "\n").encode("utf-8"))
+                # 真实盘单独写一份 (供 WebUI 显示)
+                if is_real:
+                    with open("/root/TwinEngines/logs/real_results.jsonl", "ab+") as _rf:
+                        _rf.seek(0, 2)
+                        if _rf.tell() > 0:
+                            _rf.seek(_rf.tell() - 1)
+                            if _rf.read(1) != b"\n":
+                                _rf.write(b"\n")
+                        _rf.write((res + "\n").encode("utf-8"))
                 open("/root/TwinEngines/data_runtime/sim_equity.txt", "w").write(str(round(self._sim_equity, 2)) + chr(10))
         except Exception:
             pass

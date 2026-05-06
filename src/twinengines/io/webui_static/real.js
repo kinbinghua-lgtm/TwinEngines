@@ -93,7 +93,7 @@ async function loadAll() {
     var sr = await fetch('/api/summary').then(r => r.json());
 
     // === Settled results ===
-    var rr = await fetch('/api/results').then(r => r.json());
+    var rr = await fetch('/api/real_results').then(r => r.json());
     var items = rr.items || [];
 
     var filledOnly = [];
