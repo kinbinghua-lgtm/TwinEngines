@@ -1278,18 +1278,7 @@ class LiveRunner:
             cid = str(it.get("condition_id") or "")
             if not cid:
                 continue
-            has_pos = self._has_redeemable_position(condition_id=cid)
-            if not has_pos:
-                with self._redeem_lock:
-                    self._redeem_queue.pop(cid, None)
-                    self._redeem_status["pending_n"] = len(self._redeem_queue)
-                    self._persist_auto_redeem_status()
-                if self.store is not None:
-                    self.store.append_audit("auto_redeem_skipped_no_position", {
-                        "condition_id": cid,
-                        "attempt": int(it.get("attempts") or 0) + 1,
-                    })
-                continue
+            # 直接尝试赎回, CTF 合约自行判断 (不预检 position API)
             ok, reason, tx_hash = self.poly_client.redeem_positions(condition_id=cid)
             if self.store is not None:
                 self.store.append_audit("auto_redeem_attempt", {
