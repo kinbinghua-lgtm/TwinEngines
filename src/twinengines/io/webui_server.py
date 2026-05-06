@@ -249,6 +249,9 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     ev_trend = safe_float(cw.get("ev_trend")); ev_rev = safe_float(cw.get("ev_rev")); ev = safe_float(cw.get("fill_ev") or cw.get("best_ev") or ev_rev or ev_trend); ev_min = 0.05 if (T or 0) > 80 else (0.03 if (T or 0) > 30 else 0.02)
     real_target = safe_float(cw.get("real_target_quote")); shares = real_target / ask if real_target is not None and ask else None
     bal = sm.get("real_balance_usdc"); cap = float(bal) * 0.15 if bal is not None else None; real_status = str(cw.get("real_status") or "未提交")
+    real_limit_price = safe_float(cw.get("real_limit_price"))
+    real_vwap = safe_float(cw.get("real_vwap"))
+    real_safe_quote = safe_float(cw.get("real_safe_quote"))
     def c(k,l,s,t): return {"key": k, "label": l, "status": s, "text": t}
     real = [
         c("book","盘口是否能报价","pass" if ask_up and ask_down else "fail", f"UP 当前买价={ask_up}，DOWN 当前买价={ask_down}；当前选中 {dir_label}，按价格 {ask} 计算"),
@@ -265,10 +268,11 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     elif filled: reason = "真实 FOK 已成交"
     elif T is not None and T < 5: reason = "未提交：当前窗口剩余时间少于 5 秒"
     elif "Kelly<2.5" in real_status: reason = "未提交：建议下注金额低于 $2.50，或账户余额/cap 不足"
+    elif "depth_insufficient" in real_status: reason = "未提交：盘口深度不足，折扣后可成交金额低于最小下单要求"
     else: reason = f"未提交：{fail['label']}未通过" if fail else f"未提交：{real_status}"
     fill = safe_float(cw.get("fill_amt") or cw.get("fill_amount")); shadow_status = str(cw.get("status") or "等待")
     shadow = [c("time","时间条件","pass" if T is not None and T >= 5 else "fail", f"T={T:.0f}s >= 5s" if T is not None else "无数据"), c("ev","EV 条件","pass" if ev is not None and ev >= ev_min else "fail", f"EV={ev if ev is not None else '--'}，阈值={ev_min:.2f}"), c("kelly","模拟 Kelly 条件","pass" if fill and fill >= 2.5 else "warn", f"影子 fill={fill if fill is not None else '--'}")]
-    return {"ok": True, "window_id": wid, "window_label": window_label(wid), "seq": seq, "seq_display": seq_display, "seq_total": seq_total, "prefix": seq, "T_remaining": T, "server_ts_ms": int(time.time() * 1000), "td": td, "trigger_direction": td, "trigger_direction_label": trigger_label, "trend_direction": trend_dir, "trend_direction_label": trend_label, "reversal_direction": rev_dir, "reversal_direction_label": rev_label, "ev_trend": ev_trend, "ev_rev": ev_rev, "best_dir": best_dir, "best_dir_label": dir_label, "decision_mode": direction_mode, "evaluated_direction": best_dir, "evaluated_direction_label": dir_label, "evaluated_ask": ask, "ask_up": ask_up, "ask_down": ask_down, "best_ev": ev, "real": {"status": real_status, "reason": reason, "target_quote": real_target, "target_shares": shares, "filled_order": filled, "conditions": real}, "shadow": {"status": shadow_status, "reason": str(cw.get("reason") or shadow_status), "fill_amount": fill, "ev": ev, "equity": sm.get("shadow_equity_usdc"), "conditions": shadow}, "source": "current_window.json + derived"}
+    return {"ok": True, "window_id": wid, "window_label": window_label(wid), "seq": seq, "seq_display": seq_display, "seq_total": seq_total, "prefix": seq, "T_remaining": T, "server_ts_ms": int(time.time() * 1000), "td": td, "trigger_direction": td, "trigger_direction_label": trigger_label, "trend_direction": trend_dir, "trend_direction_label": trend_label, "reversal_direction": rev_dir, "reversal_direction_label": rev_label, "ev_trend": ev_trend, "ev_rev": ev_rev, "best_dir": best_dir, "best_dir_label": dir_label, "decision_mode": direction_mode, "evaluated_direction": best_dir, "evaluated_direction_label": dir_label, "evaluated_ask": ask, "ask_up": ask_up, "ask_down": ask_down, "best_ev": ev, "real": {"status": real_status, "reason": reason, "target_quote": real_target, "target_shares": shares, "limit_price": real_limit_price, "vwap": real_vwap, "safe_executable_quote": real_safe_quote, "filled_order": filled, "conditions": real}, "shadow": {"status": shadow_status, "reason": str(cw.get("reason") or shadow_status), "fill_amount": fill, "ev": ev, "equity": sm.get("shadow_equity_usdc"), "conditions": shadow}, "source": "current_window.json + derived"}
 
 
 def create_app(*, root: Path, password: Optional[str] = None) -> Flask:

@@ -399,6 +399,70 @@ class PolymarketClient:
         out["error"] = str(last_err) if last_err else "unknown"
         return out
 
+    def fetch_book_depth(self, token_id: str, *, max_levels: int = 20) -> dict[str, Any]:
+        """获取多档盘口深度 (REST fallback only, WS 暂不支持多档)。
+        
+        返回:
+            {
+                "bids": [{"price": float, "size": float}, ...],  # 降序
+                "asks": [{"price": float, "size": float}, ...],  # 升序
+                "best_bid": float,
+                "best_ask": float,
+                "stale": bool,
+                "ts_ms": int,
+                "error": str | None,
+            }
+        """
+        out = {
+            "bids": [],
+            "asks": [],
+            "best_bid": None,
+            "best_ask": None,
+            "stale": False,
+            "ts_ms": int(time.time() * 1000),
+            "error": None,
+        }
+        url = (
+            f"{self.platform.clob_host}/book"
+            f"?token_id={urllib.parse.quote(token_id)}&_={int(time.time() * 1000)}"
+        )
+        last_err: Optional[Exception] = None
+        for attempt in range(2):
+            try:
+                data = _http_get_json(
+                    url,
+                    timeout=self.runtime_cfg.http_timeout_sec,
+                    user_agent=self.runtime_cfg.http_user_agent,
+                )
+                raw_bids = data.get("bids", []) if isinstance(data, dict) else []
+                raw_asks = data.get("asks", []) if isinstance(data, dict) else []
+                bids = [
+                    {"price": float(b.get("price") or 0), "size": float(b.get("size") or 0)}
+                    for b in raw_bids if float(b.get("price") or 0) > 0
+                ]
+                asks = [
+                    {"price": float(a.get("price") or 0), "size": float(a.get("size") or 0)}
+                    for a in raw_asks if float(a.get("price") or 0) > 0
+                ]
+                bids.sort(key=lambda x: x["price"], reverse=True)
+                asks.sort(key=lambda x: x["price"])
+                out["bids"] = bids[:max_levels]
+                out["asks"] = asks[:max_levels]
+                if bids:
+                    out["best_bid"] = bids[0]["price"]
+                if asks:
+                    out["best_ask"] = asks[0]["price"]
+                return out
+            except Exception as e:
+                last_err = e
+                if attempt == 0:
+                    logger.debug("fetch_book_depth retry (1st failed): %s", e)
+                    time.sleep(0.5)
+        logger.warning("fetch_book_depth failed (after retry): %s", last_err)
+        out["stale"] = True
+        out["error"] = str(last_err) if last_err else "unknown"
+        return out
+
     # ---------------- 账户 (链上) ----------------
 
     _USDC_ABI = [

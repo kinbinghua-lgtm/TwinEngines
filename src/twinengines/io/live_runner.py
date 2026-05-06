@@ -751,8 +751,8 @@ class LiveRunner:
 
         # 预填两个方向的 EV
         try:
-            _, _, ask_up, ask_down = self._resolve_best_direction_by_ev(event, window_id)
-        except:
+            _, _, ask_up, ask_down, _, _ = self._resolve_best_direction_by_ev(event, window_id)
+        except Exception:
             ask_up, ask_down = None, None
         _SIM_CURRENT["ask_up"] = ask_up; _SIM_CURRENT["ask_down"] = ask_down
         if ask_up is not None and ask_down is not None:
@@ -769,8 +769,8 @@ class LiveRunner:
 
         ev_min = 0.05 if t_rem > 80 else (0.03 if t_rem > 30 else 0.02)
         try:
-            best_dir, best_ev, ask_up, ask_down = self._resolve_best_direction_by_ev(event, window_id)
-        except:
+            best_dir, best_ev, ask_up, ask_down, plan_up, plan_dn = self._resolve_best_direction_by_ev(event, window_id)
+        except Exception:
             _SIM_CURRENT["status"] = "EV err"; self._write_current_window_snapshot(); return
 
         if best_dir is None:
@@ -798,6 +798,17 @@ class LiveRunner:
             return
 
         ask = ask_up if best_dir == "up" else ask_down
+        depth_plan = plan_up if best_dir == "up" else plan_dn
+        
+        # 使用深度计划里的安全金额和限价
+        if depth_plan is None:
+            depth_plan = {"safe_quote": 50.0, "limit_price": ask, "vwap": ask, "safe_shares": 0}
+        
+        safe_executable_quote = float(depth_plan.get("safe_quote", 0))
+        limit_price_from_depth = float(depth_plan.get("limit_price", ask))
+        vwap_from_depth = float(depth_plan.get("vwap", ask))
+        
+        # 影子盘仍用旧逻辑 (简化)
         poly = event.get("polymarket") or {}
         ask_sz = float(poly.get("best_ask_size_up", 0)) if best_dir == "up" else float(poly.get("best_ask_size_dn", 0))
         slippage_budget = 0.005
@@ -812,7 +823,7 @@ class LiveRunner:
                 else:
                     real_sizing = SizingCfg(kelly_fraction=0.30, max_stake_ratio=0.15, min_absolute_stake=2.50)
                     real_wp = p_rev if is_reversal else (1 - p_rev)
-                    real_b = (1 - ask) / ask if ask > 0 else 1
+                    real_b = (1 - vwap_from_depth) / vwap_from_depth if vwap_from_depth > 0 else 1
                     real_kelly_total = stake_for_trade(
                         portfolio_equity=float(real_equity),
                         win_prob=real_wp,
@@ -824,26 +835,40 @@ class LiveRunner:
                             _SIM_CURRENT["real_status"] = "real_Kelly<2.5"
                         else:
                             real_kelly_total = 2.50
+                    
+                    # 真实下单金额受深度折扣限制
                     if real_kelly_total >= 2.50:
-                        real_single = min(float(real_kelly_total), max(depth_cap, 2.50))
-                        if real_single < 2.50:
-                            real_single = 2.50
-                        active = self.market_resolver.get_active()
-                        if active:
-                            token_id = active.token_id_yes if best_dir == "up" else active.token_id_no
-                            side_label = "TREND" if not is_reversal else "REVERSAL"
-                            limit_px = round(ask * 1.005 if ask > 0 else ask, 4)
-                            self._submit_real_window_fok(
-                                window_id=window_id,
-                                best_dir=best_dir,
-                                side_label=side_label,
-                                token_id=token_id,
-                                target_quote=float(real_single),
-                                limit_price=float(limit_px),
-                                note=f"ev={best_ev:.3f} kelly={real_kelly_total:.2f}",
-                            )
-                            _SIM_CURRENT["real_status"] = "real_fok_evaluated"
-                            _SIM_CURRENT["real_target_quote"] = round(float(real_single), 2)
+                        real_single = min(float(real_kelly_total), safe_executable_quote)
+                        
+                        # 如果深度折扣后不满足最小下单要求，不下单
+                        min_shares = float(POLYMARKET_PLATFORM.min_limit_order_shares)
+                        min_quote = float(POLYMARKET_PLATFORM.min_order_quote_usdc)
+                        estimated_shares = real_single / max(limit_price_from_depth, 0.01)
+                        
+                        if real_single < max(min_quote, 2.50) or estimated_shares < min_shares:
+                            _SIM_CURRENT["real_status"] = "real_depth_insufficient"
+                            _SIM_CURRENT["real_safe_quote"] = round(safe_executable_quote, 2)
+                            _SIM_CURRENT["real_limit_price"] = round(limit_price_from_depth, 4)
+                            _SIM_CURRENT["real_vwap"] = round(vwap_from_depth, 4)
+                        else:
+                            active = self.market_resolver.get_active()
+                            if active:
+                                token_id = active.token_id_yes if best_dir == "up" else active.token_id_no
+                                side_label = "TREND" if not is_reversal else "REVERSAL"
+                                self._submit_real_window_fok(
+                                    window_id=window_id,
+                                    best_dir=best_dir,
+                                    side_label=side_label,
+                                    token_id=token_id,
+                                    target_quote=float(real_single),
+                                    limit_price=float(limit_price_from_depth),
+                                    note=f"ev={best_ev:.3f} kelly={real_kelly_total:.2f} vwap={vwap_from_depth:.4f}",
+                                )
+                                _SIM_CURRENT["real_status"] = "real_fok_evaluated"
+                                _SIM_CURRENT["real_target_quote"] = round(float(real_single), 2)
+                                _SIM_CURRENT["real_limit_price"] = round(limit_price_from_depth, 4)
+                                _SIM_CURRENT["real_vwap"] = round(vwap_from_depth, 4)
+                                _SIM_CURRENT["real_safe_quote"] = round(safe_executable_quote, 2)
             except Exception as e:
                 logger.warning("real window fok submit failed: %s", e)
                 _SIM_CURRENT["real_status"] = "real_submit_error"
@@ -1062,36 +1087,159 @@ class LiveRunner:
     def _calc_ev(win_prob: float, ask: float) -> float:
         return win_prob / ask - 1.0
 
+    @staticmethod
+    def _compute_depth_plan(
+        *,
+        asks: list[dict],
+        target_quote: float,
+        max_price: float,
+        depth_haircut: float = 0.70,
+    ) -> dict:
+        """计算在 max_price 内可吃多少，以及 VWAP。
+        
+        Args:
+            asks: [{"price": float, "size": float}, ...] 升序
+            target_quote: 目标下单金额 (USDC)
+            max_price: 最高可接受价格
+            depth_haircut: 深度安全折扣 (0.70 = 只用 70% 可成交深度)
+        
+        Returns:
+            {
+                "executable_quote": float,      # max_price 内可吃金额
+                "executable_shares": float,     # max_price 内可吃 shares
+                "safe_quote": float,            # 打折后安全金额
+                "safe_shares": float,           # 打折后安全 shares
+                "vwap": float,                  # 加权平均价
+                "limit_price": float,           # 实际吃到的最高价
+                "levels_used": int,             # 用了几档
+            }
+        """
+        cum_shares = 0.0
+        cum_quote = 0.0
+        levels = 0
+        actual_max_price = 0.0
+        
+        for level in asks:
+            price = float(level["price"])
+            size = float(level["size"])
+            if price > max_price or price <= 0:
+                break
+            cum_shares += size
+            cum_quote += size * price
+            actual_max_price = price
+            levels += 1
+        
+        vwap = cum_quote / cum_shares if cum_shares > 1e-9 else max_price
+        safe_quote = cum_quote * depth_haircut
+        safe_shares = cum_shares * depth_haircut
+        
+        return {
+            "executable_quote": cum_quote,
+            "executable_shares": cum_shares,
+            "safe_quote": safe_quote,
+            "safe_shares": safe_shares,
+            "vwap": vwap,
+            "limit_price": actual_max_price if actual_max_price > 0 else max_price,
+            "levels_used": levels,
+        }
+
     def _resolve_best_direction_by_ev(self, event: dict, window_id: str):
+        """方向选择：基于多档盘口 VWAP EV，而非买一 EV。
+        
+        Returns:
+            (best_dir, best_ev, ask_up, ask_down, depth_plan_up, depth_plan_down)
+        """
         if self.poly_client is None or self.market_resolver is None:
-            return None, -1.0, None, None
+            return None, -1.0, None, None, None, None
         active = self.market_resolver.get_active()
         if active is None:
-            return None, -1.0, None, None
+            return None, -1.0, None, None, None, None
         p_rev = float(event.get("p_rev_lower") or event.get("p_rev") or 0.3)
         trig_dir = str(event.get("trigger_direction") or "").lower()
         if trig_dir not in ("up", "down"):
-            return None, -1.0, None, None
-        book_up = self.poly_client.fetch_book(active.token_id_yes)
-        book_dn = self.poly_client.fetch_book(active.token_id_no)
+            return None, -1.0, None, None, None, None
+        
+        # 读取多档盘口
+        book_up = self.poly_client.fetch_book_depth(active.token_id_yes, max_levels=20)
+        book_dn = self.poly_client.fetch_book_depth(active.token_id_no, max_levels=20)
+        
+        if book_up.get("stale") or book_dn.get("stale"):
+            return None, -1.0, None, None, None, None
+        
+        asks_up = book_up.get("asks", [])
+        asks_dn = book_dn.get("asks", [])
         ask_up = float(book_up.get("best_ask") or 0.99)
         ask_dn = float(book_dn.get("best_ask") or 0.99)
+        
         if ask_up <= 0 or ask_up >= 1 or ask_dn <= 0 or ask_dn >= 1:
-            return None, -1.0, ask_up, ask_dn
-        def fee(a, s=5.0): return 0.018 * a * s + 0.10 + 0.002 * s
-        def ev(wp, a, s=5.0): return s * (wp / a - 1.0) - fee(a, s)
+            return None, -1.0, ask_up, ask_dn, None, None
+        if not asks_up or not asks_dn:
+            return None, -1.0, ask_up, ask_dn, None, None
+        
+        # 估算目标金额 (用于计算 VWAP)
+        target_quote = 5.0  # 默认按 $5 估算方向选择 VWAP
+        
+        # 计算最大可接受价格 (EV 约束 + tick 约束)
+        rt = self.cfg.runtime
+        price_tick = float(POLYMARKET_PLATFORM.price_tick)
+        cross_ticks = int(getattr(rt, "entry_buy_cross_ticks", 2))
+        ev_min_threshold = 0.02  # 方向选择最低 EV 要求
+        
+        def max_price_by_ev(wp: float, ev_min: float) -> float:
+            return min(wp / (1.0 + ev_min), 0.99) if wp > 0 else 0.99
+        
+        # UP 方向深度计划
+        max_price_up_ticks = ask_up + cross_ticks * price_tick
+        max_price_up_ev = max_price_by_ev(1 - p_rev if trig_dir == "down" else p_rev, ev_min_threshold)
+        max_price_up = min(max_price_up_ticks, max_price_up_ev, 0.99)
+        
+        plan_up = self._compute_depth_plan(
+            asks=asks_up,
+            target_quote=target_quote,
+            max_price=max_price_up,
+            depth_haircut=0.70,
+        )
+        
+        # DOWN 方向深度计划
+        max_price_dn_ticks = ask_dn + cross_ticks * price_tick
+        max_price_dn_ev = max_price_by_ev(p_rev if trig_dir == "down" else 1 - p_rev, ev_min_threshold)
+        max_price_dn = min(max_price_dn_ticks, max_price_dn_ev, 0.99)
+        
+        plan_dn = self._compute_depth_plan(
+            asks=asks_dn,
+            target_quote=target_quote,
+            max_price=max_price_dn,
+            depth_haircut=0.70,
+        )
+        
+        # 用 VWAP 计算 EV (扣除简化费用)
+        def fee(price: float, shares: float = 5.0) -> float:
+            return 0.018 * price * shares + 0.10 + 0.002 * shares
+        
+        def ev_vwap(wp: float, vwap: float, shares: float = 5.0) -> float:
+            return shares * (wp / vwap - 1.0) - fee(vwap, shares)
+        
+        vwap_up = plan_up["vwap"]
+        vwap_dn = plan_dn["vwap"]
+        
         if trig_dir == "up":
-            ev_rev = ev(p_rev, ask_dn)
-            ev_trend = ev(1-p_rev, ask_up)
+            ev_rev = ev_vwap(p_rev, vwap_dn)
+            ev_trend = ev_vwap(1 - p_rev, vwap_up)
         else:
-            ev_rev = ev(p_rev, ask_up)
-            ev_trend = ev(1-p_rev, ask_dn)
+            ev_rev = ev_vwap(p_rev, vwap_up)
+            ev_trend = ev_vwap(1 - p_rev, vwap_dn)
+        
         thr = 0.02
         if ev_rev > thr and ev_rev >= ev_trend:
-            return ("down" if trig_dir == "up" else "up"), ev_rev, ask_up, ask_dn
+            best_dir = "down" if trig_dir == "up" else "up"
+            best_plan = plan_dn if trig_dir == "up" else plan_up
+            return best_dir, ev_rev, ask_up, ask_dn, plan_up, plan_dn
         elif ev_trend > thr:
-            return trig_dir, ev_trend, ask_up, ask_dn
-        return None, max(ev_rev, ev_trend), ask_up, ask_dn
+            best_dir = trig_dir
+            best_plan = plan_up if trig_dir == "up" else plan_dn
+            return best_dir, ev_trend, ask_up, ask_dn, plan_up, plan_dn
+        
+        return None, max(ev_rev, ev_trend), ask_up, ask_dn, plan_up, plan_dn
 
     def _on_bar(self, bar: KlineBar) -> None:
         with self._bar_lock:
