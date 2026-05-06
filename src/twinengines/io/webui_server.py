@@ -274,6 +274,93 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     shadow = [c("time","时间条件","pass" if T is not None and T >= 5 else "fail", f"T={T:.0f}s >= 5s" if T is not None else "无数据"), c("ev","EV 条件","pass" if ev is not None and ev >= ev_min else "fail", f"EV={ev if ev is not None else '--'}，阈值={ev_min:.2f}"), c("kelly","模拟 Kelly 条件","pass" if fill and fill >= 2.5 else "warn", f"影子 fill={fill if fill is not None else '--'}")]
     return {"ok": True, "window_id": wid, "window_label": window_label(wid), "seq": seq, "seq_display": seq_display, "seq_total": seq_total, "prefix": seq, "T_remaining": T, "server_ts_ms": int(time.time() * 1000), "td": td, "trigger_direction": td, "trigger_direction_label": trigger_label, "trend_direction": trend_dir, "trend_direction_label": trend_label, "reversal_direction": rev_dir, "reversal_direction_label": rev_label, "ev_trend": ev_trend, "ev_rev": ev_rev, "best_dir": best_dir, "best_dir_label": dir_label, "decision_mode": direction_mode, "evaluated_direction": best_dir, "evaluated_direction_label": dir_label, "evaluated_ask": ask, "ask_up": ask_up, "ask_down": ask_down, "best_ev": ev, "real": {"status": real_status, "reason": reason, "target_quote": real_target, "target_shares": shares, "limit_price": real_limit_price, "vwap": real_vwap, "safe_executable_quote": real_safe_quote, "filled_order": filled, "conditions": real}, "shadow": {"status": shadow_status, "reason": str(cw.get("reason") or shadow_status), "fill_amount": fill, "ev": ev, "equity": sm.get("shadow_equity_usdc"), "conditions": shadow}, "source": "current_window.json + derived"}
 
+def analytics_payload(root: Path) -> dict[str, Any]:
+    orders_all = audit_rows(root, (
+        "order_filled", "order_failed", "order_compliance_skip",
+        "exit_guard_entry_registered", "exit_guard_entry_merged", "exit_guard_order", "exit_guard_closed",
+    ), 5000)
+    recent_orders = [x for x in orders_all if (item_ts(x) or 0) >= REAL_RESULTS_CUTOFF_TS_MS]
+    order_events = [x for x in recent_orders if str(x.get("kind")) in ("order_filled", "order_failed")]
+    fills = [x for x in order_events if str(x.get("kind")) == "order_filled"]
+    fails = [x for x in order_events if str(x.get("kind")) == "order_failed"]
+    fail_reasons: dict[str, int] = {}
+    for x in fails:
+        reason = str(x.get("error") or x.get("state") or "unknown")
+        reason = reason.split(":", 1)[0][:80]
+        fail_reasons[reason] = fail_reasons.get(reason, 0) + 1
+
+    real_results_raw = read_jsonl(root / "logs" / "real_results.jsonl", 4000)
+    real_results = [x for x in filter_items(real_results_raw, {"range": "all"}, real_cutoff=True) if str(x.get("mode") or "real").lower() == "real"]
+    shadow_results = [x for x in read_jsonl(root / "logs" / "window_results.jsonl", 4000) if str(x.get("mode") or "shadow").lower() != "real"]
+    shadow_recent = [x for x in shadow_results if (item_ts(x) or 0) >= REAL_RESULTS_CUTOFF_TS_MS]
+
+    real_by_wid = {str(x.get("window_id") or ""): x for x in real_results if x.get("window_id")}
+    shadow_by_wid = {str(x.get("window_id") or ""): x for x in shadow_recent if x.get("window_id")}
+    both_wids = sorted(set(real_by_wid) & set(shadow_by_wid))
+    only_shadow = sorted(set(shadow_by_wid) - set(real_by_wid))
+    only_real = sorted(set(real_by_wid) - set(shadow_by_wid))
+    divergence_rows = []
+    for wid in both_wids[-30:][::-1]:
+        r = real_by_wid[wid]; s = shadow_by_wid[wid]
+        divergence_rows.append({
+            "window_id": wid,
+            "ts_ms": item_ts(r) or item_ts(s),
+            "real_dir": item_dir(r),
+            "shadow_dir": item_dir(s),
+            "real_pnl": item_pnl(r),
+            "shadow_pnl": item_pnl(s),
+            "delta_pnl": (item_pnl(r) or 0.0) - (item_pnl(s) or 0.0),
+            "real_won": item_won(r),
+            "shadow_won": item_won(s),
+        })
+
+    low_entries = []
+    for x in fills:
+        px = safe_float(x.get("price"))
+        if px is not None and px <= 0.25:
+            low_entries.append(x)
+    exit_events = [x for x in recent_orders if str(x.get("kind") or "").startswith("exit_guard")]
+    exit_orders = [x for x in exit_events if str(x.get("kind")) == "exit_guard_order"]
+    exit_filled = [x for x in exit_orders if str(x.get("state")) in ("FILLED", "PARTIAL")]
+    by_kind: dict[str, int] = {}
+    for x in exit_events:
+        k = str(x.get("kind") or "unknown")
+        by_kind[k] = by_kind.get(k, 0) + 1
+
+    real_stats = calc_stats(real_results, real_balance=summary_payload(root).get("real_balance_usdc"))
+    shadow_stats = calc_stats(shadow_recent, shadow_equity=summary_payload(root).get("shadow_equity_usdc"))
+    return {
+        "ok": True,
+        "orders": {
+            "events": len(order_events),
+            "filled": len(fills),
+            "failed": len(fails),
+            "fill_rate": len(fills) / len(order_events) if order_events else None,
+            "failure_reasons": sorted(fail_reasons.items(), key=lambda kv: kv[1], reverse=True)[:10],
+        },
+        "real_stats": real_stats,
+        "shadow_stats": shadow_stats,
+        "divergence": {
+            "both_windows": len(both_wids),
+            "only_shadow_windows": len(only_shadow),
+            "only_real_windows": len(only_real),
+            "rows": divergence_rows,
+        },
+        "low_price": {
+            "filled_count": len(low_entries),
+            "items": low_entries[:20],
+        },
+        "exit_guard": {
+            "events": len(exit_events),
+            "orders": len(exit_orders),
+            "filled_or_partial": len(exit_filled),
+            "by_kind": sorted(by_kind.items(), key=lambda kv: kv[1], reverse=True),
+            "recent": exit_events[:30],
+        },
+        "source": "state.sqlite + real_results.jsonl + window_results.jsonl",
+        "cutoff_ts_ms": REAL_RESULTS_CUTOFF_TS_MS,
+    }
+
 
 def create_app(*, root: Path, password: Optional[str] = None) -> Flask:
     app = Flask(__name__, static_folder=None)
@@ -282,6 +369,7 @@ def create_app(*, root: Path, password: Optional[str] = None) -> Flask:
     @app.route("/")
     @app.route("/real")
     @app.route("/shadow")
+    @app.route("/analytics")
     @app.route("/logs")
     def index(): return send_file(str(STATIC / "index.html"))
     @app.route("/static/<path:filename>")
@@ -305,6 +393,8 @@ def create_app(*, root: Path, password: Optional[str] = None) -> Flask:
     def current_decision(): return jsonify(current_decision_payload(root))
     @app.route("/api/summary")
     def summary(): return jsonify(summary_payload(root))
+    @app.route("/api/analytics")
+    def analytics(): return jsonify(analytics_payload(root))
 
     @app.route("/api/real/orders")
     def real_orders():

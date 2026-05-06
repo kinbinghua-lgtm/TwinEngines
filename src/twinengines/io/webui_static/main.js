@@ -36,10 +36,23 @@ async function loadShadow(){
   rows('shadow-orders',o.items,x=>`<tr><td><div>${ts(x.ts_ms)}</div><div class="mono muted">${esc(x.window_id)}</div></td><td class="mono">${esc(x.seq||x.trigger_pattern||'')}</td><td>${esc((x.direction||x.best_dir||x.dir||'').toUpperCase())}</td><td>${money(x.amount||x.fill_amount||x.fill_amt)}</td><td>${num(x.best_ev,4)}</td><td>${esc(x.status||'')}</td><td>${esc(x.reason||'')}</td></tr>`,7);
 }
 async function loadLogs(){const q=encodeURIComponent($('log-q')?.value||''),level=encodeURIComponent($('log-level')?.value||'all');const lg=await api(`/api/logs?n=220&q=${q}&level=${level}`);$('logbox').textContent=(lg.items||[]).map(x=>`[${x.source}] ${x.text}`).join('\n')||'暂无日志'}
-async function loadAll(){try{await Promise.all([loadLive(),loadReal(),loadShadow(),loadLogs()])}catch(e){$('health').textContent='异常 '+e;$('health').className='pill bad'}}
-function pageFromPath(){const p=location.pathname.replace('/','')||'live';return ['real','shadow','logs'].includes(p)?p:'live'}
+async function loadAnalytics(){
+  const a=await api('/api/analytics');
+  const os=a.orders||{}, rs=a.real_stats||{}, ss=a.shadow_stats||{}, dv=a.divergence||{}, lp=a.low_price||{}, eg=a.exit_guard||{};
+  setText('ana-fill-rate',pct(os.fill_rate));setText('ana-fill-sub',`${os.filled??0} 成功 / ${os.events??0} 事件，失败 ${os.failed??0}`);
+  setText('ana-real-pnl',money(rs.total_pnl));setText('ana-real-sub',`笔数 ${rs.count??0}，胜率 ${pct(rs.win_rate)}`);
+  setText('ana-shadow-pnl',money(ss.total_pnl));setText('ana-shadow-sub',`笔数 ${ss.count??0}，胜率 ${pct(ss.win_rate)}`);
+  setText('ana-both',dv.both_windows??0);setText('ana-only-shadow',dv.only_shadow_windows??0);setText('ana-low-count',lp.filled_count??0);
+  setText('ana-exit-orders',eg.orders??0);setText('ana-exit-sub',`${eg.filled_or_partial??0} filled/partial，事件 ${eg.events??0}`);
+  rows('ana-fail-reasons',os.failure_reasons||[],x=>`<tr><td>${esc(x[0])}</td><td class="right">${esc(x[1])}</td></tr>`,2);
+  rows('ana-exit-kinds',eg.by_kind||[],x=>`<tr><td>${esc(x[0])}</td><td class="right">${esc(x[1])}</td></tr>`,2);
+  rows('ana-divergence',dv.rows||[],x=>`<tr><td><div>${ts(x.ts_ms)}</div><div class="mono muted">${esc(x.window_id)}</div></td><td>${esc((x.real_dir||'').toUpperCase())}</td><td>${esc((x.shadow_dir||'').toUpperCase())}</td><td class="right ${clsPnl(x.real_pnl)}">${money(x.real_pnl)}</td><td class="right ${clsPnl(x.shadow_pnl)}">${money(x.shadow_pnl)}</td><td class="right ${clsPnl(x.delta_pnl)}">${money(x.delta_pnl)}</td><td>R:${wonText(x.real_won)} S:${wonText(x.shadow_won)}</td></tr>`,7);
+  rows('ana-low-entries',lp.items||[],x=>`<tr><td><div>${ts(x.ts_ms)}</div><div class="mono muted">${esc(x.window_id||'')}</div></td><td>${esc((x.direction||x.side||'').toUpperCase())}</td><td class="right">${money(x.size_usdc||x.amount)}</td><td class="right">${num(x.price,4)}</td><td class="mono">${esc(String(x.client_order_id||x.exchange_order_id||'').slice(-32))}</td></tr>`,5);
+}
+async function loadAll(){try{await Promise.all([loadLive(),loadReal(),loadShadow(),loadAnalytics(),loadLogs()])}catch(e){$('health').textContent='异常 '+e;$('health').className='pill bad'}}
+function pageFromPath(){const p=location.pathname.replace('/','')||'live';return ['real','shadow','analytics','logs'].includes(p)?p:'live'}
 function setPage(p){document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.page===p));document.querySelectorAll('.sec').forEach(s=>s.classList.toggle('active',s.id===p));history.replaceState(null,'',p==='live'?'/':'/'+p)}
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>setPage(b.dataset.page));
 document.querySelectorAll('#real-filters input,#real-filters select').forEach(el=>{el.addEventListener('change',loadReal);el.addEventListener('input',()=>{clearTimeout(window.__realFilterTimer);window.__realFilterTimer=setTimeout(loadReal,500)})});
 document.querySelectorAll('#shadow-filters input,#shadow-filters select').forEach(el=>{el.addEventListener('change',loadShadow);el.addEventListener('input',()=>{clearTimeout(window.__shadowFilterTimer);window.__shadowFilterTimer=setTimeout(loadShadow,500)})});
-setPage(pageFromPath());loadAll();setInterval(tickTime,1000);setInterval(loadLive,5000);setInterval(()=>{const p=pageFromPath(); if(p==='real')loadReal(); else if(p==='shadow')loadShadow(); else if(p==='logs')loadLogs();},5000);
+setPage(pageFromPath());loadAll();setInterval(tickTime,1000);setInterval(loadLive,5000);setInterval(()=>{const p=pageFromPath(); if(p==='real')loadReal(); else if(p==='shadow')loadShadow(); else if(p==='analytics')loadAnalytics(); else if(p==='logs')loadLogs();},5000);
