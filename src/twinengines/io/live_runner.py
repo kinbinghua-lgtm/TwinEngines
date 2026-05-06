@@ -1234,7 +1234,8 @@ class LiveRunner:
             url = "https://clob.polymarket.com/markets?closed=true&limit=10"
             req = urllib.request.Request(url, headers={"User-Agent": "TE/1.0"})
             data = _j.loads(urllib.request.urlopen(req, timeout=10).read())
-            for m in (data if isinstance(data, list) else []):
+            markets = data if isinstance(data, list) else data.get("data", [])
+            for m in markets:
                 cid = m.get("condition_id")
                 if not cid: continue
                 # 检查是否有持仓
