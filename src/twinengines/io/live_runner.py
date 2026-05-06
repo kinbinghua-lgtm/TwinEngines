@@ -827,8 +827,7 @@ class LiveRunner:
                         note=f"ev={best_ev:.3f} kelly={kelly_total:.2f}")
                     filled_shares = float(getattr(ticket, 'filled_size_shares', 0) or 0)
                     if filled_shares < 1e-9:
-                        # FOK 被拒 → 不扣预算, 等下一秒再试
-                        _SIM_CURRENT["status"] = "FOK_rejected"
+                        # FOK 被拒 → 不扣预算, 等下一秒再试. 不改 _SIM_CURRENT (影子面板不受影响)
                         self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0,
                                                "rejected", "FOK_depth_insufficient", d_abs)
                         return
