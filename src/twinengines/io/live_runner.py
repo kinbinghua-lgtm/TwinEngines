@@ -1214,35 +1214,29 @@ class LiveRunner:
             }
 
     def _scan_historical_positions_for_redeem(self) -> None:
-        """启动时扫描已关闭的 BTC 市场, 有持仓的入队赎回."""
+        """启动时尝试赎回所有已关闭的 BTC 市场 (不预检, CTF 自行判断)."""
         try:
             if not self.poly_client:
                 return
             import urllib.request, json as _j2
-            # 获取最近已关闭的市场
-            url = "https://clob.polymarket.com/markets?closed=true&limit=20&tag=btc"
+            url = "https://clob.polymarket.com/markets?closed=true&limit=30"
             req = urllib.request.Request(url, headers={"User-Agent": "TE/1.0"})
             data = _j2.loads(urllib.request.urlopen(req, timeout=10).read())
             markets = data if isinstance(data, list) else data.get("data", [])
             count = 0
             for m in markets:
+                q = str(m.get("question") or "")
+                if "Bitcoin" not in q and "BTC" not in q:
+                    continue
                 cid = m.get("condition_id")
                 if not cid: continue
-                # 只处理已关闭的 (不预检 resolved, CTF 自行判断)
-                # 检查是否有持仓
-                try:
-                    pos = self.poly_client.fetch_market_positions(condition_id=cid)
-                    if pos and any(float(p.get("amount", 0) or 0) > 0 for p in pos):
-                        self._redeem_queue[cid] = {
-                            "condition_id": cid,
-                            "eligible_ts_ms": 0,
-                            "enqueued_at_ms": int(__import__("time").time() * 1000),
-                        }
-                        count += 1
-                        logger.info("auto_redeem: enqueued resolved market cid=%s", cid[:16])
-                except Exception:
-                    pass
-            logger.info("auto_redeem: scanned %d markets, enqueued %d", len(markets), count)
+                self._redeem_queue[cid] = {
+                    "condition_id": cid,
+                    "eligible_ts_ms": 0,
+                    "enqueued_at_ms": int(__import__("time").time() * 1000),
+                }
+                count += 1
+            logger.info("auto_redeem: startup enqueued %d BTC markets for redeem", count)
         except Exception as e:
             logger.warning("scan_historical_redeem failed: %s", e)
 
