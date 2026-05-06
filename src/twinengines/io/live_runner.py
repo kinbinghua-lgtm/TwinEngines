@@ -6,7 +6,7 @@
     2. BinanceFeed       BTC 实时 1s K 线 → 给信号层用
     3. MarketResolver    Polymarket 5min BTC condition_id → 给下单用
     4. PolymarketClient  下单 / 行情 / 余额查询
-    5. PositionLock      短期门控 (防并发撞单; GTC 挂单注册后即释放以支持同窗多笔)
+    5. PositionLock      短期门控 (防并发撞单)
     6. Reconciler        持仓对账 + 异常熔断
     7. Alerting          关键事件外推
     8. StateStore        状态持久化 (重启恢复)
@@ -36,7 +36,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from .alerting import AlertingDispatcher
 from .binance_feed import BinanceFeed, BinanceFeedCfg, KlineBar
@@ -59,20 +59,18 @@ from .shadow_signal_enrich import enrich_shadow_event_with_polymarket
 from .shadow_signal_engine import ShadowSignalEngine
 from .single_instance import SingleInstanceLock
 from .state_store import KEY_LAST_EQUITY, StateStore, load_regime
-from ..risk.limits import RiskCfg, RiskGuard
-from ..risk.regime import RegimeManager, RegimeBands, SEED_PRESET, GROWTH_PRESET
-from ..risk.sizing import SizingCfg, stake_for_trade
 
 logger = get_logger(__name__)
 
 # 模块级状态 (跨回调保持)
 _SIM_FILLED: set[str] = set()        # 影子盘窗口锁仓
-_REAL_FILLED: set[str] = set()       # 真实盘窗口锁仓 (独立于影子)
+_REAL_WINDOW_ORDERS: dict[str, dict[str, Any]] = {}  # 实盘窗口级 FOK 状态机
 _SIM_CURRENT: dict = {}
 _SIM_WIN_BUDGET: dict[str, float] = {}  # 影子盘每窗口剩余 Kelly 预算
 _SIM_WIN_DIR: dict[str, str] = {}       # 影子盘每窗口首次成交方向
-_REAL_WIN_BUDGET: dict[str, float] = {} # 真实盘每窗口剩余 Kelly 预算 (独立于影子)
-_REAL_WIN_DIR: dict[str, str] = {}      # 真实盘每窗口首次成交方向
+_REAL_RETRYABLE_STATES = {OrderState.REJECTED, OrderState.CANCELLED, OrderState.TIMEOUT}
+_REAL_UNKNOWN_ERRORS = ("unknown", "timeout", "query_failed", "post_order_exception")
+      # 真实盘每窗口首次成交方向
 
 @dataclass
 class LiveRunnerCfg:
@@ -86,7 +84,6 @@ class LiveRunnerCfg:
     shadow_signal_log_path: str = "logs/shadow_signals.jsonl"
     disable_trend: bool = False
     disable_reversal: Optional[bool] = None
-
 
 @dataclass
 class LiveRunner:
@@ -104,8 +101,6 @@ class LiveRunner:
     store: Optional[StateStore] = None
     instance_lock: Optional[SingleInstanceLock] = None
     shadow_engine: Optional[ShadowSignalEngine] = None
-    regime_manager: Optional[RegimeManager] = None
-    risk_guard: Optional[RiskGuard] = None
     _sim_equity: float = 20.0  # 影子模拟资金 (随盈亏动态变化)
     _win_fills: dict[str, dict] = field(default_factory=dict)  # 每窗口仓位跟踪: {wid: {dir, filled, target, equity}}
 
@@ -125,11 +120,6 @@ class LiveRunner:
         "last_attempt_ts_ms": None,
         "last_success_ts_ms": None,
     })
-    _open_gtc_orders: dict[str, dict] = field(default_factory=dict)
-    _order_watch_thread: Optional[threading.Thread] = None
-    _window_order_flags: dict[str, dict] = field(default_factory=dict)
-    _window_order_flags_lock: threading.RLock = field(default_factory=threading.RLock)
-    _window_gtc_timeout_streak: dict[str, int] = field(default_factory=dict)
     _cleanup_done: bool = False
 
     # ---------------- 工厂 ----------------
@@ -200,7 +190,6 @@ class LiveRunner:
 
         # state store
         self.store = StateStore(db_path=runtime.state_db_path)
-        self._restore_window_order_flags()
 
         # alerting
         self.alerting = AlertingDispatcher.from_env()
@@ -351,10 +340,6 @@ class LiveRunner:
             # 启动时扫描历史已结算市场, 入队赎回
             self._scan_historical_positions_for_redeem()
 
-        # 风控: Regime + RiskGuard (启动时先用 ULTRA 参数, 后续随权益动态切换)
-        self.regime_manager = RegimeManager()
-        self.risk_guard = RiskGuard(cfg=self.regime_manager.ultra.risk_cfg)
-
         # signal handlers
         self._install_signal_handlers()
         self._start_order_watch_worker()
@@ -369,47 +354,15 @@ class LiveRunner:
 
     # ---------------- 主等待循环 ----------------
 
-    _monitor_positions: dict[str, dict] = field(default_factory=dict)  # 0.99 平仓追踪
-
     def _wait_loop(self) -> None:
         logger.info("LiveRunner main loop entered (sleep-based, decisions are event-driven via on_bar)")
         try:
             while not self._stopping.is_set():
                 time.sleep(1.0)
                 if self.poly_client and self.cfg.runtime.enable_real_orders:
-                    self._auto_settle_99_check()
                     self._write_real_balance()
         finally:
             self.stop()
-
-    def _auto_settle_99_check(self) -> None:
-        """0.99 平仓: 持仓 token best_bid >= 0.99 则卖出, 跳过赎回."""
-        if not self.market_resolver:
-            return
-        active = self.market_resolver.get_active()
-        if not active or not self._monitor_positions:
-            return
-        for window_id, pos in list(self._monitor_positions.items()):
-            token_id = pos.get("token_id")
-            if not token_id:
-                continue
-            try:
-                book = self.poly_client.fetch_book(token_id)
-                best_bid = float(book.get("best_bid") or 0)
-                if best_bid >= 0.99:
-                    size = float(book.get("best_bid_size") or 0)
-                    amount = pos.get("amount", 0)  # number of shares
-                    sell_sz = min(amount, size)
-                    if sell_sz > 0:
-                        self.submit_signal_order(
-                            window_id=window_id, side="REVERSAL", direction=pos.get("dir", ""),
-                            size_quote_usdc=sell_sz * best_bid, limit_price=best_bid,
-                            note="0.99_auto_settle")
-                        logger.info("0.99 auto-settle: sold window=%s token=%s sz=%.2f bid=%.2f",
-                                    window_id, token_id, sell_sz, best_bid)
-                    self._monitor_positions.pop(window_id, None)
-            except Exception:
-                pass
 
     _balance_last_write: float = 0
 
@@ -451,8 +404,6 @@ class LiveRunner:
                     logger.warning("stop %s failed: %s", name, e)
         if self._auto_redeem_thread is not None:
             self._auto_redeem_thread.join(timeout=2.0)
-        if self._order_watch_thread is not None:
-            self._order_watch_thread.join(timeout=2.0)
 
         if self.instance_lock is not None:
             try:
@@ -567,13 +518,13 @@ class LiveRunner:
             return None
 
     def _on_shadow_window_close(self, window_id: str) -> None:
-        global _SIM_FILLED, _REAL_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR, _REAL_WIN_BUDGET, _REAL_WIN_DIR
+        global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR
         _SIM_FILLED.discard(window_id)
-        _REAL_FILLED.discard(window_id)
+        _REAL_WINDOW_ORDERS.pop(window_id, None)
         _SIM_WIN_BUDGET.pop(window_id, None)
         _SIM_WIN_DIR.pop(window_id, None)
-        _REAL_WIN_BUDGET.pop(window_id, None)
-        _REAL_WIN_DIR.pop(window_id, None)
+
+
         _SIM_CURRENT.clear()
         try:
             import json as _j, urllib.request as _u, os as _o
@@ -676,6 +627,15 @@ class LiveRunner:
         except Exception as e:
             logger.warning("simulate order failed: %s", e)
 
+    def _write_current_window_snapshot(self) -> None:
+        try:
+            import json as _j, os as _o
+            _o.makedirs("/root/TwinEngines/data_runtime", exist_ok=True)
+            with open("/root/TwinEngines/data_runtime/current_window.json", "w") as _cw:
+                _cw.write(_j.dumps(_SIM_CURRENT, default=str))
+        except Exception:
+            pass
+
     def _append_shadow_signal_jsonl(self, event: dict) -> None:
         path = self.cfg.shadow_signal_log_path
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -683,18 +643,14 @@ class LiveRunner:
         with open(path, "a", encoding="utf-8") as f:
             f.write(line + "\n")
 
-
-
-
     def _simulate_order_from_signal(self, event: dict) -> None:
-        global _SIM_FILLED, _REAL_FILLED, _SIM_CURRENT
-        global _SIM_WIN_BUDGET, _SIM_WIN_DIR, _REAL_WIN_BUDGET, _REAL_WIN_DIR
+        global _SIM_FILLED, _SIM_CURRENT
+        global _SIM_WIN_BUDGET, _SIM_WIN_DIR
         window_id = str(event.get("window_id") or "")
         # 真实盘是否活跃
-        is_real_mode = (not self.cfg.dry_run_signals and not self.cfg.record_shadow_signals
+        is_real_mode = (not self.cfg.dry_run_signals
                         and self.poly_client and self.market_resolver
                         and self.cfg.runtime.enable_real_orders)
-        # 影子盘始终用自己的状态 (不受实盘影响)
         filled_set = _SIM_FILLED   # 影子盘锁仓
         win_budget = _SIM_WIN_BUDGET  # 影子盘预算
         win_dir = _SIM_WIN_DIR     # 影子盘方向
@@ -726,7 +682,7 @@ class LiveRunner:
         except: pass
 
         if not window_id or t_rem < 5:
-            _SIM_CURRENT["status"] = "T<5s"; return
+            _SIM_CURRENT["status"] = "T<5s"; self._write_current_window_snapshot(); return
 
         # 预填两个方向的 EV
         try:
@@ -750,25 +706,11 @@ class LiveRunner:
         try:
             best_dir, best_ev, ask_up, ask_down = self._resolve_best_direction_by_ev(event, window_id)
         except:
-            _SIM_CURRENT["status"] = "EV err"; return
+            _SIM_CURRENT["status"] = "EV err"; self._write_current_window_snapshot(); return
 
         if best_dir is None:
-            _SIM_CURRENT["status"] = "EV neg"; return
+            _SIM_CURRENT["status"] = "EV neg"; self._write_current_window_snapshot(); return
 
-        # 检查本窗是否还有剩余预算 (完全锁仓则跳过)
-        if window_id in filled_set:
-            _SIM_CURRENT["status"] = "filled"; return
-
-        # 反向信号锁仓: 已有仓位但新信号方向相反 → 立即锁仓
-        if window_id in win_dir and best_dir != win_dir[window_id]:
-            filled_set.add(window_id)
-            _SIM_CURRENT["status"] = "locked_reverse"
-            _SIM_CURRENT["best_dir"] = best_dir
-            self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0,
-                                   "rejected", f"reverse_lock:{best_dir}vs{win_dir[window_id]}", d_abs)
-            return
-
-        # 反转方向: d + p 双重过滤，被拒则记录
         is_reversal = (best_dir != event.get("trigger_direction", ""))
         reject_reason = ""
         if is_reversal:
@@ -780,85 +722,113 @@ class LiveRunner:
             _SIM_CURRENT["status"] = reject_reason
             _SIM_CURRENT["best_dir"] = best_dir
             self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0, "rejected", reject_reason, d_abs)
+            self._write_current_window_snapshot()
             return
 
         if best_ev < ev_min:
             _SIM_CURRENT["status"] = f"EV<{ev_min}"
             _SIM_CURRENT["best_dir"] = best_dir
             self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0, "rejected", f"EV<{ev_min}", d_abs)
+            self._write_current_window_snapshot()
             return
 
-        # Kelly sizing — 首次信号计算总预算, 后续追单用剩余额度
         ask = ask_up if best_dir == "up" else ask_down
+        poly = event.get("polymarket") or {}
+        ask_sz = float(poly.get("best_ask_size_up", 0)) if best_dir == "up" else float(poly.get("best_ask_size_dn", 0))
+        slippage_budget = 0.005
+        max_price = ask * (1.0 + slippage_budget) if ask > 0 else ask
+        depth_cap = min(ask_sz * max_price * 0.8, 200.0) if ask_sz > 0 and ask > 0 else 50.0
+
+        if is_real_mode:
+            try:
+                real_equity = self.poly_client.fetch_account_equity_usdc() if self.poly_client else None
+                if real_equity is None:
+                    _SIM_CURRENT["real_status"] = "real_equity_unavailable"
+                else:
+                    real_sizing = SizingCfg(kelly_fraction=0.30, max_stake_ratio=0.15, min_absolute_stake=2.50)
+                    real_wp = p_rev if is_reversal else (1 - p_rev)
+                    real_b = (1 - ask) / ask if ask > 0 else 1
+                    real_kelly_total = stake_for_trade(
+                        portfolio_equity=float(real_equity),
+                        win_prob=real_wp,
+                        net_payoff=real_b,
+                        cfg=real_sizing,
+                    )
+                    if real_kelly_total < 2.50:
+                        if float(real_equity or 0.0) * 0.15 < 2.50:
+                            _SIM_CURRENT["real_status"] = "real_Kelly<2.5"
+                        else:
+                            real_kelly_total = 2.50
+                    if real_kelly_total >= 2.50:
+                        real_single = min(float(real_kelly_total), max(depth_cap, 2.50))
+                        if real_single < 2.50:
+                            real_single = 2.50
+                        active = self.market_resolver.get_active()
+                        if active:
+                            token_id = active.token_id_yes if best_dir == "up" else active.token_id_no
+                            side_label = "TREND" if not is_reversal else "REVERSAL"
+                            limit_px = round(ask * 1.005 if ask > 0 else ask, 4)
+                            self._submit_real_window_fok(
+                                window_id=window_id,
+                                best_dir=best_dir,
+                                side_label=side_label,
+                                token_id=token_id,
+                                target_quote=float(real_single),
+                                limit_price=float(limit_px),
+                                note=f"ev={best_ev:.3f} kelly={real_kelly_total:.2f}",
+                            )
+                            _SIM_CURRENT["real_status"] = "real_fok_evaluated"
+                            _SIM_CURRENT["real_target_quote"] = round(float(real_single), 2)
+            except Exception as e:
+                logger.warning("real window fok submit failed: %s", e)
+                _SIM_CURRENT["real_status"] = "real_submit_error"
+
+        if window_id in filled_set:
+            _SIM_CURRENT["status"] = "filled"; self._write_current_window_snapshot(); return
+
+        if window_id in win_dir and best_dir != win_dir[window_id]:
+            filled_set.add(window_id)
+            _SIM_CURRENT["status"] = "locked_reverse"
+            _SIM_CURRENT["best_dir"] = best_dir
+            self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0,
+                                   "rejected", f"reverse_lock:{best_dir}vs{win_dir[window_id]}", d_abs)
+            self._write_current_window_snapshot()
+            return
+
         if window_id not in win_budget:
             try:
-                # 影子盘用模拟权益, 真实盘用 Polymarket 实际余额
-                if is_real_mode and self.poly_client:
-                    equity = self.poly_client.fetch_account_equity_usdc() or self._sim_equity
-                else:
-                    equity = self._sim_equity
+                equity = self._sim_equity
                 sizing = SizingCfg(kelly_fraction=0.30, max_stake_ratio=0.15, min_absolute_stake=2.50)
                 wp = p_rev if is_reversal else (1 - p_rev)
                 b = (1 - ask) / ask if ask > 0 else 1
                 kelly_total = stake_for_trade(portfolio_equity=equity, win_prob=wp, net_payoff=b, cfg=sizing)
-            except:
+            except Exception:
+                equity = self._sim_equity
                 kelly_total = 5.0
             if kelly_total < 2.50:
                 if equity * 0.15 < 2.50:
                     _SIM_CURRENT["status"] = "Kelly<2.5"
                     _SIM_CURRENT["best_dir"] = best_dir
                     self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0, "rejected", "Kelly<2.5", d_abs)
+                    self._write_current_window_snapshot()
                     return
                 kelly_total = 2.50
             win_budget[window_id] = kelly_total
             win_dir[window_id] = best_dir
         else:
-            kelly_total = win_budget[window_id]  # 保持不变
+            kelly_total = win_budget[window_id]
 
         remaining = win_budget.get(window_id, 0)
         if remaining <= 0:
             filled_set.add(window_id)
-            _SIM_CURRENT["status"] = "filled"; return
+            _SIM_CURRENT["status"] = "filled"; self._write_current_window_snapshot(); return
 
-        # FOK + 滑点: 用内置手续费中的滑点预算 (0.005) 作为可接受价差
-        poly = event.get("polymarket") or {}
-        ask_sz = float(poly.get("best_ask_size_up", 0)) if best_dir == "up" else float(poly.get("best_ask_size_dn", 0))
-        slippage_budget = 0.005  # 来自 fee 公式: 0.005 * a * (1-a) * s
-        max_price = ask * (1.0 + slippage_budget) if ask > 0 else ask
-        depth_cap = min(ask_sz * max_price * 0.8, 200.0) if ask_sz > 0 and ask > 0 else 50.0
         single = min(remaining, max(depth_cap, 2.50))
         if remaining < 2.50:
-            single = remaining  # 剩余不足 $2.50 就全下, 不强行拉高
+            single = remaining
         elif single < 2.50:
-            single = 2.50       # 预算够但深度薄, 保底 $2.50
+            single = 2.50
 
-        # 真实盘: FOK 下单 (每窗口只发一次, 不重试)
-        if is_real_mode:
-            # 防反向: 已有持仓但方向相反 → 锁仓
-            if window_id in _REAL_WIN_DIR and best_dir != _REAL_WIN_DIR[window_id]:
-                _REAL_FILLED.add(window_id)
-                return
-            # 已发过单 → 跳过 (防重复)
-            if window_id in _REAL_FILLED:
-                return
-            # 记录方向 + 标记已发送
-            _REAL_WIN_DIR[window_id] = best_dir
-            _REAL_FILLED.add(window_id)
-
-            try:
-                active = self.market_resolver.get_active()
-                if active:
-                    token_id = active.token_id_yes if best_dir == "up" else active.token_id_no
-                    side_label = "TREND" if not is_reversal else "REVERSAL"
-                    limit_px = ask * 1.005 if ask > 0 else ask
-                    self.submit_signal_order(
-                        window_id=window_id, side=side_label, direction=best_dir,
-                        size_quote_usdc=single, limit_price=round(limit_px, 4),
-                        note=f"ev={best_ev:.3f} kelly={kelly_total:.2f}")
-            except Exception as e:
-                logger.warning("real order submit failed: %s", e)
-
-        # 扣减预算 (影子盘直接扣; 真实盘通过 FOK 检查才到这里)
         win_budget[window_id] = remaining - single
         self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, single, "filled", "FILLED", d_abs)
 
@@ -873,6 +843,136 @@ class LiveRunner:
         _SIM_CURRENT["fill_ev"] = round(best_ev, 4)
         _SIM_CURRENT["budget_remain"] = round(win_budget.get(window_id, 0), 2)
         _SIM_CURRENT["budget_total"] = round(kelly_total, 2)
+        self._write_current_window_snapshot()
+
+    def _apply_real_fok_ticket(self, state: dict[str, Any], ticket: Optional[OrderTicket]) -> None:
+        now_ms = int(time.time() * 1000)
+        state["attempt_in_flight"] = False
+        state["last_attempt_ts_ms"] = now_ms
+        if ticket is None:
+            state["last_ticket_state"] = "not_submitted"
+            state["last_error"] = "precheck_not_submitted"
+            return
+
+        state["last_ticket_state"] = ticket.state.value
+        state["last_error"] = ticket.last_error
+        state["last_order_id"] = ticket.exchange_order_id
+        matched = max(0.0, float(ticket.filled_size_shares or 0.0))
+        if ticket.state in (OrderState.FILLED, OrderState.PARTIAL) and matched <= 1e-9:
+            state["locked"] = True
+            state["lock_reason"] = "unknown_filled_size"
+            state["unknown_outcome"] = True
+            return
+
+        if matched > 1e-9:
+            state["filled_shares"] = min(
+                float(state["target_shares"]),
+                float(state.get("filled_shares", 0.0)) + matched,
+            )
+            state["remaining_shares"] = max(
+                0.0,
+                float(state["target_shares"]) - float(state["filled_shares"]),
+            )
+
+        min_shares = float(POLYMARKET_PLATFORM.min_limit_order_shares)
+        min_quote = float(POLYMARKET_PLATFORM.min_order_quote_usdc)
+        remaining_quote = float(state.get("remaining_shares", 0.0)) * float(state["limit_price"])
+        if float(state.get("remaining_shares", 0.0)) <= 1e-9:
+            state["locked"] = True
+            state["lock_reason"] = "target_filled"
+            return
+        if matched > 1e-9 and (float(state["remaining_shares"]) < min_shares or remaining_quote < min_quote):
+            state["locked"] = True
+            state["lock_reason"] = "dust_remaining"
+            return
+
+        err = str(ticket.last_error or "").lower()
+        if ticket.state in _REAL_RETRYABLE_STATES and ("fok_no_fill" in err or "not_fill" in err or "not filled" in err):
+            return
+        if ticket.state == OrderState.DRY_RUN_SHADOW:
+            state["locked"] = True
+            state["lock_reason"] = "dry_run_shadow"
+            return
+        if ticket.state == OrderState.TIMEOUT or any(x in err for x in _REAL_UNKNOWN_ERRORS):
+            state["locked"] = True
+            state["lock_reason"] = "unknown_fok_outcome"
+            state["unknown_outcome"] = True
+            return
+        if ticket.state not in _REAL_RETRYABLE_STATES:
+            state["locked"] = True
+            state["lock_reason"] = f"unhandled_state:{ticket.state.value}"
+
+    def _submit_real_window_fok(
+        self,
+        *,
+        window_id: str,
+        best_dir: str,
+        side_label: str,
+        token_id: str,
+        target_quote: float,
+        limit_price: float,
+        note: str,
+    ) -> Optional[OrderTicket]:
+        state = _REAL_WINDOW_ORDERS.get(window_id)
+        min_shares = float(POLYMARKET_PLATFORM.min_limit_order_shares)
+        if state is None:
+            target_shares = float(target_quote) / max(float(limit_price), 0.01)
+            if target_shares + 1e-9 < min_shares:
+                logger.info("real window skip below min shares window_id=%s shares=%.4f", window_id, target_shares)
+                return None
+            state = {
+                "window_id": window_id,
+                "direction": best_dir,
+                "side_label": side_label,
+                "token_id": token_id,
+                "target_quote": float(target_quote),
+                "target_shares": float(target_shares),
+                "filled_shares": 0.0,
+                "remaining_shares": float(target_shares),
+                "limit_price": float(limit_price),
+                "locked": False,
+                "lock_reason": None,
+                "unknown_outcome": False,
+                "attempt_in_flight": False,
+                "attempt_seq": 0,
+                "created_ts_ms": int(time.time() * 1000),
+            }
+            _REAL_WINDOW_ORDERS[window_id] = state
+        elif best_dir != state.get("direction"):
+            state["locked"] = True
+            state["lock_reason"] = "reverse_signal"
+            logger.warning(
+                "real window reverse lock window_id=%s new=%s old=%s",
+                window_id, best_dir, state.get("direction"),
+            )
+            return None
+
+        if state.get("locked") or state.get("unknown_outcome") or state.get("attempt_in_flight"):
+            return None
+
+        remaining_shares = float(state.get("remaining_shares", 0.0))
+        remaining_quote = remaining_shares * float(state["limit_price"])
+        if remaining_shares + 1e-9 < min_shares or remaining_quote + 1e-9 < float(POLYMARKET_PLATFORM.min_order_quote_usdc):
+            state["locked"] = True
+            state["lock_reason"] = "dust_remaining"
+            return None
+
+        state["attempt_seq"] = int(state.get("attempt_seq", 0)) + 1
+        state["attempt_in_flight"] = True
+        client_order_id = f"{window_id}:{state['direction']}:fok:{state['attempt_seq']}"
+        state["last_client_order_id"] = client_order_id
+        ticket = self.submit_signal_order(
+            window_id=window_id,
+            side=str(state["side_label"]),
+            direction=str(state["direction"]),
+            size_quote_usdc=remaining_quote,
+            limit_price=float(state["limit_price"]),
+            note=note,
+            fixed_size_shares=remaining_shares,
+            fixed_client_order_id=client_order_id,
+        )
+        self._apply_real_fok_ticket(state, ticket)
+        return ticket
 
     def _write_sim_record(self, wid, trig, p_adj, p_lower, t_rem, au, ad, best_dir, best_ev, fill_amt, status, reason, d_abs=0):
         try:
@@ -892,7 +992,6 @@ class LiveRunner:
                     if _f.read(1) != b"\n": _f.write(b"\n")
                 _f.write((_j.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8"))
         except: pass
-
 
     @staticmethod
     def _calc_ev(win_prob: float, ask: float) -> float:
@@ -929,7 +1028,6 @@ class LiveRunner:
             return trig_dir, ev_trend, ask_up, ask_dn
         return None, max(ev_rev, ev_trend), ask_up, ask_dn
 
-
     def _on_bar(self, bar: KlineBar) -> None:
         with self._bar_lock:
             self._last_bar = bar
@@ -955,252 +1053,6 @@ class LiveRunner:
         )
         if self.poly_feed is not None:
             self.poly_feed.subscribe([market.token_id_yes, market.token_id_no])
-        self._cancel_expired_gtc_orders(now_ts_ms=int(time.time() * 1000))
-
-    def _start_order_watch_worker(self) -> None:
-        if self._order_watch_thread is not None:
-            return
-        self._order_watch_thread = threading.Thread(
-            target=self._order_watch_loop,
-            name="OrderWatchWorker",
-            daemon=True,
-        )
-        self._order_watch_thread.start()
-
-    def _order_watch_loop(self) -> None:
-        while not self._stopping.is_set():
-            try:
-                self._poll_open_gtc_orders()
-                self._cancel_expired_gtc_orders(now_ts_ms=int(time.time() * 1000))
-            except Exception as e:
-                logger.warning("order watch loop failed: %s", e)
-            self._stopping.wait(1.0)
-
-    def _cancel_open_gtc_exchange_prefix(self, window_id: str) -> None:
-        """撤掉链上仍挂着、client_order_id 属于本窗口的 GTC (runner 本地未跟踪到的挂单)."""
-        if self.poly_client is None:
-            return
-        prefix = f"{window_id}:"
-        try:
-            open_rows = self.poly_client.fetch_open_orders()
-        except Exception as e:
-            logger.warning("fetch_open_orders for cancel_prefix failed: %s", e)
-            return
-        for o in open_rows:
-            coid = str(o.get("client_order_id") or o.get("clientOrderId") or "")
-            if not coid.startswith(prefix):
-                continue
-            oid = str(o.get("id") or o.get("orderID") or o.get("orderId") or "")
-            if not oid:
-                continue
-            stub = OrderTicket(
-                client_order_id=coid,
-                side="BUY",
-                token_id=str(o.get("asset_id") or o.get("token_id") or ""),
-                price=float(o.get("price") or 0),
-                size_quote_usdc=0.0,
-                state=OrderState.SUBMITTED,
-                exchange_order_id=oid,
-            )
-            self.poly_client.cancel_order(stub, reason="window_cancel_orphan")
-
-    def _cancel_all_pending_gtc_for_window(self, window_id: str) -> None:
-        """新信号前: 取消本窗口在册 GTC + 交易所前缀孤儿单; 若有已成交部分则合并入账并释放门控."""
-        if self.poly_client is None:
-            return
-        meta = self._open_gtc_orders.pop(window_id, None)
-        if meta is not None:
-            ticket: OrderTicket = meta["ticket"]
-            if not ticket.is_terminal():
-                self.poly_client.cancel_order(ticket, reason="new_signal_cancel_prior")  # type: ignore[union-attr]
-            self.poly_client.refresh_order_truth(ticket, delay_ms=int(self.cfg.runtime.order_ghost_confirm_delay_ms))  # type: ignore[union-attr]
-            filled = float(ticket.filled_size_shares or 0.0)
-            if filled > 1e-9:
-                self._report_gtc_fill_to_reconciler(
-                    window_id=window_id,
-                    side=str(meta.get("side") or ""),
-                    direction=str(meta.get("direction") or ""),
-                    token_id=str(meta.get("token_id") or ""),
-                    ticket=ticket,
-                    note=str(meta.get("note") or ""),
-                )
-            if self.position_lock is not None:
-                self.position_lock.release(window_id, reason="new_signal_cancel_prior")
-            self._clear_window_order_flag(window_id=window_id, clear_window_done=False)
-        self._cancel_open_gtc_exchange_prefix(window_id)
-
-    def _report_gtc_fill_to_reconciler(
-        self,
-        *,
-        window_id: str,
-        side: str,
-        direction: str,
-        token_id: str,
-        ticket: OrderTicket,
-        note: str,
-    ) -> None:
-        if self.reconciler is None:
-            return
-        px = float(ticket.price)
-        prior = float(getattr(ticket, "prior_leg_filled_shares", 0.0) or 0.0)
-        cur = float(ticket.filled_size_shares or 0.0)
-        total = prior + cur
-        if total < 1e-9 and ticket.state == OrderState.FILLED:
-            total = float(ticket.size_shares or (ticket.size_quote_usdc / max(px, 0.01)))
-        if total < 1e-9:
-            return
-        chk = float(getattr(ticket, "reconcile_checkpoint_shares", 0.0) or 0.0)
-        delta = max(0.0, total - chk)
-        if delta < 1e-9:
-            return
-        self.reconciler.merge_or_report_local_position(LocalPosition(
-            window_id=window_id,
-            side=side,
-            token_id=token_id,
-            expected_size_shares=delta,
-            expected_avg_price=px,
-            opened_ts_ms=int(ticket.submitted_at_ms or time.time() * 1000),
-            note=note,
-        ))
-        ticket.reconcile_checkpoint_shares = total
-
-    def _infer_gtc_expire_ts_ms(self, *, active_market: ActiveMarket) -> int:
-        now_ms = int(time.time() * 1000)
-        wait_ms = int(max(1.0, float(self.cfg.runtime.gtc_max_wait_sec)) * 1000)
-        return min(int(active_market.end_ts_ms), now_ms + wait_ms)
-
-    def _poll_open_gtc_orders(self) -> None:
-        if self.poly_client is None:
-            return
-        rows = list(self._open_gtc_orders.items())
-        for window_id, meta in rows:
-            ticket: OrderTicket = meta["ticket"]
-            self.poly_client.poll_order(ticket)
-            if ticket.state == OrderState.FILLED:
-                self.poly_client.refresh_order_truth(
-                    ticket, delay_ms=int(self.cfg.runtime.order_ghost_confirm_delay_ms),
-                )
-                self._report_gtc_fill_to_reconciler(
-                    window_id=window_id,
-                    side=str(meta.get("side") or ""),
-                    direction=str(meta.get("direction") or ""),
-                    token_id=str(meta.get("token_id") or ""),
-                    ticket=ticket,
-                    note=str(meta.get("note") or ""),
-                )
-                if self.position_lock is not None:
-                    self.position_lock.release(window_id, reason="gtc_filled")
-                self._finalize_gtc_window(window_id, reason="gtc_filled", ticket=ticket)
-                continue
-            if ticket.state == OrderState.PARTIAL:
-                self.poly_client.cancel_order(ticket, reason="gtc_partial_cancel_remaining")
-                self.poly_client.refresh_order_truth(
-                    ticket, delay_ms=int(self.cfg.runtime.order_ghost_confirm_delay_ms),
-                )
-                if self.store is not None:
-                    self.store.append_audit("gtc_partial_cancelled", {
-                        "window_id": window_id,
-                        "client_order_id": ticket.client_order_id,
-                        "exchange_order_id": ticket.exchange_order_id,
-                        "filled_shares": ticket.filled_size_shares,
-                    })
-                self._report_gtc_fill_to_reconciler(
-                    window_id=window_id,
-                    side=str(meta.get("side") or ""),
-                    direction=str(meta.get("direction") or ""),
-                    token_id=str(meta.get("token_id") or ""),
-                    ticket=ticket,
-                    note=str(meta.get("note") or ""),
-                )
-                if self.position_lock is not None:
-                    self.position_lock.release(window_id, reason="gtc_partial_done")
-                self._finalize_gtc_window(window_id, reason="gtc_partial_cancelled", ticket=ticket)
-                continue
-            if ticket.state in (OrderState.CANCELLED, OrderState.REJECTED, OrderState.TIMEOUT):
-                self.poly_client.refresh_order_truth(
-                    ticket, delay_ms=int(self.cfg.runtime.order_ghost_confirm_delay_ms),
-                )
-                if float(ticket.filled_size_shares or 0) > 1e-9:
-                    if self.alerting is not None:
-                        self.alerting.alert("warn", "gtc_ghost_or_late_fill", {
-                            "window_id": window_id,
-                            "filled_shares": ticket.filled_size_shares,
-                            "state": ticket.state.value,
-                        })
-                    self._report_gtc_fill_to_reconciler(
-                        window_id=window_id,
-                        side=str(meta.get("side") or ""),
-                        direction=str(meta.get("direction") or ""),
-                        token_id=str(meta.get("token_id") or ""),
-                        ticket=ticket,
-                        note=str(meta.get("note") or ""),
-                    )
-                if self.position_lock is not None:
-                    self.position_lock.release(window_id, reason=f"gtc_{ticket.state.value.lower()}")
-                self._finalize_gtc_window(window_id, reason=f"gtc_{ticket.state.value.lower()}", ticket=ticket)
-
-    def _cancel_expired_gtc_orders(self, *, now_ts_ms: int) -> None:
-        if self.poly_client is None:
-            return
-        rows = list(self._open_gtc_orders.items())
-        for window_id, meta in rows:
-            expire_ts_ms = int(meta.get("expire_ts_ms") or 0)
-            if expire_ts_ms > 0 and now_ts_ms >= expire_ts_ms:
-                ticket: OrderTicket = meta["ticket"]
-                if not ticket.is_terminal():
-                    self.poly_client.cancel_order(ticket, reason="gtc_max_wait_or_window_end")
-                self.poly_client.refresh_order_truth(
-                    ticket, delay_ms=int(self.cfg.runtime.order_ghost_confirm_delay_ms),
-                )
-                filled = float(ticket.filled_size_shares or 0.0)
-                if filled > 1e-9:
-                    self._report_gtc_fill_to_reconciler(
-                        window_id=window_id,
-                        side=str(meta.get("side") or ""),
-                        direction=str(meta.get("direction") or ""),
-                        token_id=str(meta.get("token_id") or ""),
-                        ticket=ticket,
-                        note=str(meta.get("note") or ""),
-                    )
-                if self.position_lock is not None:
-                    self.position_lock.release(window_id, reason="gtc_expired_cancel")
-                if self.store is not None:
-                    self.store.append_audit("gtc_window_timeout_cancelled", {
-                        "window_id": window_id,
-                        "client_order_id": ticket.client_order_id,
-                        "exchange_order_id": ticket.exchange_order_id,
-                        "filled_shares": ticket.filled_size_shares,
-                    })
-                self._finalize_gtc_window(window_id, reason="gtc_window_timeout_cancelled", ticket=ticket)
-
-    def _finalize_gtc_window(self, window_id: str, *, reason: str, ticket: Optional[OrderTicket] = None) -> None:
-        self._open_gtc_orders.pop(window_id, None)
-        self._clear_window_order_flag(window_id=window_id, clear_window_done=False)
-        filled = 0.0
-        if ticket is not None:
-            filled = float(ticket.filled_size_shares or 0.0)
-            if filled < 1e-9 and ticket.state == OrderState.FILLED:
-                filled = float(ticket.size_shares or 0.0)
-        rlow = reason.lower()
-        if filled < 1e-9 and rlow == "gtc_window_timeout_cancelled":
-            self._window_gtc_timeout_streak[window_id] = int(self._window_gtc_timeout_streak.get(window_id, 0)) + 1
-        elif filled > 1e-9 or "filled" in rlow or "partial" in rlow:
-            self._window_gtc_timeout_streak[window_id] = 0
-        if self.store is not None:
-            self.store.append_audit("gtc_window_finalized", {
-                "window_id": window_id,
-                "reason": reason,
-                "filled_shares": filled,
-                "timeout_streak": int(self._window_gtc_timeout_streak.get(window_id, 0)),
-            })
-        # 注册 0.99 平仓监控 (仅实盘)
-        meta = self._open_gtc_orders.get(window_id)
-        if filled > 0 and meta and self.cfg.runtime.enable_real_orders:
-            self._monitor_positions[window_id] = {
-                "token_id": meta.get("token_id"),
-                "amount": filled,
-                "dir": meta.get("dir", ""),
-            }
 
     def _enqueue_redeem(self, market: ActiveMarket) -> None:
         with self._redeem_lock:
@@ -1339,14 +1191,6 @@ class LiveRunner:
         self.store.put("auto_redeem.status", dict(self._redeem_status))
 
     def _on_reconcile_circuit_trip(self, kind: str) -> None:
-        for _wid, meta in list(self._open_gtc_orders.items()):
-            t: OrderTicket = meta["ticket"]
-            if self.poly_client is not None and not t.is_terminal():
-                try:
-                    self.poly_client.cancel_order(t, reason=f"reconcile_circuit:{kind}")
-                except Exception as e:
-                    logger.warning("cancel gtc on reconcile circuit failed: %s", e)
-            self._open_gtc_orders.pop(_wid, None)
         if self.poly_client is not None:
             self.poly_client._trip_circuit(f"reconcile:{kind}")
         set_halted(f"reconcile_circuit:{kind}")
@@ -1415,14 +1259,14 @@ class LiveRunner:
         size_quote_usdc: float,
         limit_price: float,
         note: str = "",
+        fixed_size_shares: Optional[float] = None,
+        fixed_client_order_id: Optional[str] = None,
     ) -> Optional[OrderTicket]:
-        """实盘下单主入口: GTC 限价 + 盘口 best_ask + 最低手数合规 (策略传入的 limit_price 仅作参考, 实盘以盘口为准).
+        """实盘下单主入口: FOK 限价 + 最低手数合规。窗口状态机可传入固定价格/固定股数。
 
         流程要点:
-            - 同一窗口内新信号会先撤掉未完结 GTC;
             - 凯利金额经 order_compliance 与平台最低 5 股 / $1 对齐;
-            - GTC 最长等待 min(GTC_MAX_WAIT_SEC, 至窗口结束);
-            - 挂单注册后释放 PositionLock, 允许窗口内多次独立下单。
+            - FOK 订单立即成交或取消。
         """
         if self.position_lock is None or self.poly_client is None or self.market_resolver is None:
             logger.error("submit_signal_order: runner not initialized")
@@ -1430,18 +1274,6 @@ class LiveRunner:
 
         rt = self.cfg.runtime
         plat = POLYMARKET_PLATFORM
-        max_streak = max(1, int(rt.gtc_window_max_consecutive_timeouts))
-        if int(self._window_gtc_timeout_streak.get(window_id, 0)) >= max_streak:
-            logger.info(
-                "submit_signal_order skipped: gtc_timeout_streak window_id=%s streak=%s",
-                window_id, self._window_gtc_timeout_streak.get(window_id, 0),
-            )
-            if self.store is not None:
-                self.store.append_audit("gtc_skip_timeout_streak", {"window_id": window_id})
-            return None
-
-        self._cancel_all_pending_gtc_for_window(window_id)
-
         active = self.market_resolver.get_active()
         if active is None:
             logger.warning("submit_signal_order: no active market; window_id=%s", window_id)
@@ -1466,32 +1298,56 @@ class LiveRunner:
             logger.warning("submit_signal_order: equity unavailable window_id=%s", window_id)
             return None
 
-        comp = compute_compliant_limit_buy(
-            kelly_quote_usdc=float(size_quote_usdc),
-            best_ask=best_ask,
-            available_balance_usdc=float(eq),
-            min_shares=float(plat.min_limit_order_shares),
-            min_quote_usdc=float(plat.min_order_quote_usdc),
-        )
-        if comp is None:
-            logger.info(
-                "submit_signal_order: compliance skip (cannot meet min shares/quote vs balance) window_id=%s",
-                window_id,
+        if fixed_size_shares is not None and float(fixed_size_shares) > 0:
+            target_shares = float(fixed_size_shares)
+            target_quote = float(target_shares) * float(limit_price)
+            if target_shares + 1e-9 < float(plat.min_limit_order_shares):
+                logger.info(
+                    "submit_signal_order: remaining shares below min window_id=%s shares=%.4f",
+                    window_id, target_shares,
+                )
+                return None
+            if target_quote + 1e-9 < float(plat.min_order_quote_usdc):
+                logger.info(
+                    "submit_signal_order: remaining quote below min window_id=%s quote=%.4f",
+                    window_id, target_quote,
+                )
+                return None
+            if target_quote > float(eq) * 0.995 + 1e-9:
+                logger.warning("submit_signal_order: insufficient equity for fixed remainder window_id=%s", window_id)
+                return None
+            comp_size_quote = target_quote
+            comp_size_shares = target_shares
+            entry_px = float(limit_price)
+        else:
+            comp = compute_compliant_limit_buy(
+                kelly_quote_usdc=float(size_quote_usdc),
+                best_ask=best_ask,
+                available_balance_usdc=float(eq),
+                min_shares=float(plat.min_limit_order_shares),
+                min_quote_usdc=float(plat.min_order_quote_usdc),
             )
-            if self.store is not None:
-                self.store.append_audit("order_compliance_skip", {"window_id": window_id, "best_ask": best_ask})
-            return None
+            if comp is None:
+                logger.info(
+                    "submit_signal_order: compliance skip (cannot meet min shares/quote vs balance) window_id=%s",
+                    window_id,
+                )
+                if self.store is not None:
+                    self.store.append_audit("order_compliance_skip", {"window_id": window_id, "best_ask": best_ask})
+                return None
 
-        entry_px = self._aggressive_buy_limit_price(
-            best_ask=best_ask,
-            shares=float(comp.size_shares),
-            equity=float(eq),
-            cross_ticks=int(rt.entry_buy_cross_ticks),
-            price_tick=float(plat.price_tick),
-            price_max=float(plat.price_extreme_max),
-        )
+            entry_px = self._aggressive_buy_limit_price(
+                best_ask=best_ask,
+                shares=float(comp.size_shares),
+                equity=float(eq),
+                cross_ticks=int(rt.entry_buy_cross_ticks),
+                price_tick=float(plat.price_tick),
+                price_max=float(plat.price_extreme_max),
+            )
+            comp_size_quote = float(comp.size_quote_usdc)
+            comp_size_shares = float(comp.size_shares)
 
-        client_order_id = f"{window_id}:{side}:{uuid.uuid4().hex[:8]}"
+        client_order_id = fixed_client_order_id or f"{window_id}:{side}:{uuid.uuid4().hex[:8]}"
         if not self.position_lock.try_acquire(window_id, side=side, client_order_id=client_order_id, note=note):
             logger.warning("submit_signal_order: window lock busy window_id=%s", window_id)
             return None
@@ -1501,23 +1357,15 @@ class LiveRunner:
                 side="BUY",
                 token_id=token_id,
                 price=float(entry_px),
-                size_quote_usdc=float(comp.size_quote_usdc),
+                size_quote_usdc=float(comp_size_quote),
                 client_order_id=client_order_id,
-                size_shares=float(comp.size_shares),
+                size_shares=float(comp_size_shares),
             )
             self.position_lock.attach_order(window_id, client_order_id)
 
             if ticket.state == OrderState.FILLED:
                 self.poly_client.refresh_order_truth(
                     ticket, delay_ms=int(rt.order_ghost_confirm_delay_ms),
-                )
-                self._report_gtc_fill_to_reconciler(
-                    window_id=window_id,
-                    side=side,
-                    direction=direction,
-                    token_id=token_id,
-                    ticket=ticket,
-                    note=note,
                 )
                 if self.store is not None:
                     self.store.append_audit("order_filled", {
@@ -1563,46 +1411,6 @@ class LiveRunner:
                     })
                 if self.position_lock is not None:
                     self.position_lock.release(window_id, reason="dry_run_shadow")
-            elif ticket.order_type == "GTC" and ticket.state in (OrderState.SUBMITTED, OrderState.PARTIAL):
-                expire_ts_ms = self._infer_gtc_expire_ts_ms(active_market=active)
-                self._mark_window_order_active(
-                    window_id=window_id,
-                    client_order_id=client_order_id,
-                    exchange_order_id=str(ticket.exchange_order_id or ""),
-                    expire_ts_ms=expire_ts_ms,
-                )
-                self._open_gtc_orders[window_id] = {
-                    "ticket": ticket,
-                    "expire_ts_ms": expire_ts_ms,
-                    "side": side,
-                    "direction": direction,
-                    "dir": direction,
-                    "note": note,
-                    "token_id": token_id,
-                }
-                if float(getattr(ticket, "prior_leg_filled_shares", 0.0) or 0.0) > 1e-9:
-                    self._report_gtc_fill_to_reconciler(
-                        window_id=window_id,
-                        side=side,
-                        direction=direction,
-                        token_id=token_id,
-                        ticket=ticket,
-                        note=note,
-                    )
-                if self.store is not None:
-                    self.store.append_audit("gtc_submitted", {
-                        "window_id": window_id,
-                        "client_order_id": client_order_id,
-                        "exchange_order_id": ticket.exchange_order_id,
-                        "expire_ts_ms": expire_ts_ms,
-                        "price": ticket.price,
-                        "size_usdc": ticket.size_quote_usdc,
-                        "size_shares": comp.size_shares,
-                        "best_ask": best_ask,
-                        "ref_limit_price": float(limit_price),
-                    })
-                if self.position_lock is not None:
-                    self.position_lock.release(window_id, reason="gtc_registered")
             else:
                 self.position_lock.release(window_id, reason=f"order_{ticket.state.value}")
                 self._clear_window_order_flag(window_id=window_id, clear_window_done=False)
@@ -1623,113 +1431,24 @@ class LiveRunner:
             logger.exception("submit_signal_order crashed: %s", e)
             if self.position_lock is not None:
                 self.position_lock.release(window_id, reason="submit_crash")
-            return None
+            fail_ticket = OrderTicket(
+                client_order_id=fixed_client_order_id or f"{window_id}:{side}:submit_crash",
+                side="BUY",
+                token_id=token_id,
+                price=float(limit_price),
+                size_quote_usdc=float(size_quote_usdc),
+                state=OrderState.TIMEOUT,
+                last_error=f"submit_signal_exception:{str(e)[:160]}",
+            )
+            return fail_ticket
 
     def settle_window(self, window_id: str, *, reason: str = "expired") -> None:
-        ticket: Optional[OrderTicket] = None
-        if self.poly_client is not None:
-            self._cancel_open_gtc_exchange_prefix(window_id)
-            meta = self._open_gtc_orders.get(window_id)
-            if meta is not None:
-                ticket = meta["ticket"]
-                if not ticket.is_terminal():
-                    self.poly_client.cancel_order(ticket, reason=f"settle_window:{reason}")
-                self.poly_client.refresh_order_truth(
-                    ticket, delay_ms=int(self.cfg.runtime.order_ghost_confirm_delay_ms),
-                )
-                filled = float(ticket.filled_size_shares or 0.0)
-                if filled > 1e-9:
-                    self._report_gtc_fill_to_reconciler(
-                        window_id=window_id,
-                        side=str(meta.get("side") or ""),
-                        direction=str(meta.get("direction") or ""),
-                        token_id=str(meta.get("token_id") or ""),
-                        ticket=ticket,
-                        note=str(meta.get("note") or ""),
-                    )
-            self._finalize_gtc_window(window_id, reason=f"settle_window:{reason}", ticket=ticket)
-        self._clear_window_order_flag(window_id=window_id, clear_window_done=True)
-        self._window_gtc_timeout_streak.pop(window_id, None)
         if self.position_lock is None:
             return
         self.position_lock.release(window_id, reason=reason)
         if self.reconciler is not None:
             self.reconciler.clear_local_position(window_id)
 
-    def _restore_window_order_flags(self) -> None:
-        if self.store is None:
-            return
-        raw = self.store.get("window_order_flags.active", default={})
-        if not isinstance(raw, dict):
-            return
-        with self._window_order_flags_lock:
-            self._window_order_flags = {str(k): dict(v) for k, v in raw.items() if isinstance(v, dict)}
-
-    def _persist_window_order_flags(self) -> None:
-        if self.store is None:
-            return
-        with self._window_order_flags_lock:
-            self.store.put("window_order_flags.active", dict(self._window_order_flags))
-
-    def _is_window_order_active(self, window_id: str) -> bool:
-        with self._window_order_flags_lock:
-            e = self._window_order_flags.get(window_id)
-            return bool(e and e.get("active"))
-
-    def _mark_window_order_active(
-        self,
-        *,
-        window_id: str,
-        client_order_id: str,
-        exchange_order_id: str,
-        expire_ts_ms: int,
-    ) -> None:
-        with self._window_order_flags_lock:
-            self._window_order_flags[window_id] = {
-                "active": True,
-                "window_done": False,
-                "client_order_id": client_order_id,
-                "exchange_order_id": exchange_order_id,
-                "expire_ts_ms": int(expire_ts_ms),
-                "updated_ts_ms": int(time.time() * 1000),
-            }
-        self._persist_window_order_flags()
-
-    def _clear_window_order_flag(self, *, window_id: str, clear_window_done: bool) -> None:
-        with self._window_order_flags_lock:
-            e = self._window_order_flags.get(window_id)
-            if e is None:
-                return
-            e["active"] = False
-            e["updated_ts_ms"] = int(time.time() * 1000)
-            if clear_window_done:
-                self._window_order_flags.pop(window_id, None)
-        self._persist_window_order_flags()
-
-    def _reconcile_window_order_flags_from_exchange(self) -> None:
-        if self.poly_client is None:
-            return
-        open_orders = self.poly_client.fetch_open_orders()
-        ids = set()
-        for o in open_orders:
-            coid = str(o.get("client_order_id") or o.get("clientOrderId") or "")
-            if not coid:
-                continue
-            window_id = coid.split(":", 1)[0]
-            if not window_id:
-                continue
-            ids.add(window_id)
-            self._mark_window_order_active(
-                window_id=window_id,
-                client_order_id=coid,
-                exchange_order_id=str(o.get("id") or o.get("orderID") or o.get("orderId") or ""),
-                expire_ts_ms=int(time.time() * 1000) + 300_000,
-            )
-        # 清掉本地残留但链上已无活跃挂单的窗口
-        with self._window_order_flags_lock:
-            stale = [wid for wid, e in self._window_order_flags.items() if e.get("active") and wid not in ids]
-        for wid in stale:
-            self._clear_window_order_flag(window_id=wid, clear_window_done=False)
     def _enrich_shadow_signal_book(self, event: dict) -> None:
         if self.poly_client is None:
             event["polymarket"] = {"error": "poly_client_unavailable"}
@@ -1745,5 +1464,4 @@ class LiveRunner:
             stake_quote_usdc=float(getattr(rt, "shadow_book_check_stake_usdc", 5.0)),
             book_max_staleness_sec=float(getattr(rt, "book_max_staleness_sec", 5.0)),
         )
-
 

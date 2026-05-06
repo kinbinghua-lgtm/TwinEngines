@@ -1,108 +1,144 @@
-"""Standalone WebUI server for TwinEngines."""
+"""Single WebUI server for TwinEngines."""
+from __future__ import annotations
+import argparse, json, os, sqlite3, sys, time
 from pathlib import Path
-import json, os, sys
-
+from typing import Any, Optional
 sys.path.insert(0, os.environ.get("TWINENGINES_ROOT", os.path.abspath(".")))
-
-from flask import Flask, jsonify, request, send_file
+from flask import Flask, jsonify, redirect, request, send_file, session
 
 HERE = Path(__file__).resolve().parent
+ROOT = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 and not str(sys.argv[1]).startswith("-") else Path.cwd().resolve()
 STATIC = HERE / "webui_static"
-ROOT = Path(sys.argv[1]) if len(sys.argv) > 1 else HERE
 
-app = Flask(__name__, static_folder=None)
+def tail(path: Path, n: int) -> list[str]:
+    if not path.is_file(): return []
+    return path.read_text(encoding="utf-8", errors="replace").splitlines()[-n:]
 
-@app.route("/")
-def index():
-    return send_file(str(STATIC / "index.html"))
+def read_json(path: Path) -> Optional[dict[str, Any]]:
+    try:
+        x = json.loads(path.read_text(encoding="utf-8"))
+        return x if isinstance(x, dict) else None
+    except Exception:
+        return None
 
-@app.route("/real")
-def real_index():
-    return send_file(str(STATIC / "real.html"))
+def read_float(path: Path) -> Optional[float]:
+    try: return float(path.read_text(encoding="utf-8").strip())
+    except Exception: return None
 
-@app.route("/static/<path:path>")
-def static_files(path):
-    f = STATIC / path
-    if not f.exists():
-        return "Not found", 404
-    ct = "text/css" if path.endswith(".css") else "text/javascript" if path.endswith(".js") else "text/html"
-    return send_file(str(f), mimetype=ct)
+def read_jsonl(path: Path, n: int) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for line in tail(path, n):
+        try:
+            x = json.loads(line)
+            if isinstance(x, dict): out.append(x)
+        except Exception: pass
+    out.reverse()
+    return out
 
-@app.route("/api/shadow_orders")
-def api_orders():
-    n = int(request.args.get("n", "50"))
-    p = ROOT / "logs" / "shadow_orders.jsonl"
-    items = []
-    if p.exists():
-        with open(p, encoding="utf-8") as f:
-            for line in f.readlines()[-n:]:
-                try: items.append(json.loads(line.strip()))
-                except: pass
-    result = []
-    for i in items:
-        result.append({
-            "window_id": i.get("window_id",""),
-            "trigger_pattern": i.get("trigger_pattern",""),
-            "best_dir": i.get("best_dir",""),
-            "p_adj": round(i.get("p_adj",0), 3),
-            "best_ev": round(i.get("best_ev",0), 4),
-            "fill_amount": round(i.get("fill_amount") or i.get("kelly_stake") or 0, 1),
-            "T_remaining": round(i.get("T_remaining",0), 0),
-            "status": i.get("status", "filled"),
-            "reason": i.get("reason", ""),
-            "ts_ms": i.get("ts_ms", 0),
-            "d_abs_pct": round(i.get("d_abs_pct", 0), 4) if "d_abs_pct" in i else None,
-            "p_rev_lower": round(i.get("p_rev_lower", 0), 3) if "p_rev_lower" in i else None,
+def safe_float(v: Any) -> Optional[float]:
+    try: return None if v is None else float(v)
+    except Exception: return None
+
+def window_label(wid: str) -> Optional[str]:
+    try:
+        return time.strftime("%H:%M UTC", time.gmtime(int(str(wid)[1:]) / 1000.0)) if str(wid).startswith("w") else None
+    except Exception:
+        return None
+
+def audit_rows(root: Path, kinds: tuple[str, ...], n: int) -> list[dict[str, Any]]:
+    db = root / "data_runtime" / "state.sqlite"
+    if not db.is_file(): return []
+    rows: list[dict[str, Any]] = []
+    q = ",".join("?" for _ in kinds)
+    try:
+        con = sqlite3.connect(str(db), timeout=2.0)
+        cur = con.execute(f"SELECT ts_ms,kind,payload FROM audit_events WHERE kind IN ({q}) ORDER BY id DESC LIMIT ?", (*kinds, n))
+        for ts_ms, kind, payload in cur.fetchall():
+            try: p = json.loads(payload)
+            except Exception: p = {"_raw": payload}
+            if not isinstance(p, dict): p = {"value": p}
+            p = dict(p); p["ts_ms"] = int(ts_ms); p["kind"] = str(kind); rows.append(p)
+        con.close()
+    except Exception:
+        pass
+    return rows
+
+def create_app(*, root: Path, password: Optional[str] = None) -> Flask:
+    app = Flask(__name__, static_folder=None)
+    app.secret_key = os.environ.get("WEBUI_SECRET", "te-webui-") + str(os.getpid())
+    password = password or os.environ.get("WEBUI_PASSWORD")
+
+    @app.before_request
+    def gate():
+        if request.path in ("/login", "/healthz") or not password or session.get("authed"):
+            return None
+        if request.path.startswith("/api/"):
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        return redirect("/login")
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        if not password: return redirect("/")
+        if request.method == "POST" and request.form.get("password") == password:
+            session["authed"] = True; return redirect("/")
+        return "<form method=post><input name=password type=password autofocus><button>login</button></form>", 401 if request.method == "POST" else 200
+
+    @app.route("/")
+    def index(): return send_file(str(STATIC / "index.html"))
+    @app.route("/real")
+    def real(): return redirect("/")
+    @app.route("/healthz")
+    def healthz(): return jsonify({"ok": True, "root": str(root), "ts_ms": int(time.time() * 1000)})
+
+    @app.route("/api/current_window")
+    def current_window():
+        d = read_json(root / "data_runtime" / "current_window.json") or {}
+        wid = str(d.get("window_id") or "")
+        d.update({"ok": True, "window_label": window_label(wid), "source": "data_runtime/current_window.json"})
+        return jsonify(d)
+
+    @app.route("/api/summary")
+    def summary():
+        real = read_json(root / "data_runtime" / "real_balance.json") or {}
+        real_ok = bool(real.get("ok"))
+        return jsonify({
+            "ok": True,
+            "real_balance_usdc": safe_float(real.get("balance_usdc")) if real_ok else None,
+            "real_pending_redeem_usdc": safe_float(real.get("pending_redeem")) if real_ok else None,
+            "real_redeem_ok": real.get("redeem_ok") if real else None,
+            "shadow_equity_usdc": read_float(root / "data_runtime" / "sim_equity.txt"),
         })
-    return jsonify({"ok": True, "items": list(reversed(result))})
 
-@app.route("/api/summary")
-def api_summary():
-    eq_path = ROOT / "data_runtime" / "sim_equity.txt"
-    e = None
-    if eq_path.exists():
-        try: e = round(float(eq_path.read_text().strip()), 2)
-        except: pass
-    return jsonify({"ok": True, "equity": e, "start": 20.0})
+    @app.route("/api/real/orders")
+    def real_orders(): return jsonify({"ok": True, "items": audit_rows(root, ("order_filled", "order_failed"), int(request.args.get("n", "50"))), "source": "state.sqlite:audit_events"})
+    @app.route("/api/real/results")
+    def real_results(): return jsonify({"ok": True, "items": read_jsonl(root / "logs" / "real_results.jsonl", int(request.args.get("n", "80"))), "source": "logs/real_results.jsonl"})
 
-@app.route("/api/current_window")
-def api_current_window():
-    try:
-        cw_path = ROOT / "data_runtime" / "current_window.json"
-        if cw_path.exists():
-            data = json.loads(cw_path.read_text())
-            return jsonify({"ok": True, **data})
-        return jsonify({"ok": True})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+    @app.route("/api/shadow/orders")
+    def shadow_orders():
+        items = read_jsonl(root / "logs" / "shadow_orders.jsonl", int(request.args.get("n", "80")))
+        for x in items: x.setdefault("fill_amount", x.get("fill_amt") or x.get("kelly_stake"))
+        return jsonify({"ok": True, "items": items, "source": "logs/shadow_orders.jsonl"})
 
-@app.route("/api/results")
-def api_results():
-    p = ROOT / "logs" / "window_results.jsonl"
-    items = []
-    if p.exists():
-        with open(p, encoding="utf-8") as f:
-            for line in f.readlines()[-200:]:
-                try: items.append(json.loads(line.strip()))
-                except: pass
-    return jsonify({"ok": True, "items": list(reversed(items))})
+    @app.route("/api/shadow/results")
+    def shadow_results():
+        n = int(request.args.get("n", "80")); raw = read_jsonl(root / "logs" / "window_results.jsonl", max(n * 3, n))
+        return jsonify({"ok": True, "items": [x for x in raw if str(x.get("mode") or "shadow").lower() != "real"][:n], "source": "logs/window_results.jsonl:mode!=real"})
 
-@app.route("/api/real/balance")
-def api_real_balance():
-    try:
-        p = ROOT / "data_runtime" / "real_balance.json"
-        if p.exists():
-            return jsonify(json.loads(p.read_text(encoding="utf-8")))
-    except: pass
-    return jsonify({"ok": False, "balance_usdc": 0, "pending_redeem": 0, "redeem_ok": False, "msg": "No balance data"})
+    @app.route("/api/logs")
+    def logs():
+        n = int(request.args.get("n", "160"))
+        items = [{"source": "twinengines.log", "text": x} for x in tail(root / "logs" / "twinengines.log", n // 2 + 1)]
+        items += [{"source": "webui.log", "text": x} for x in tail(root / "logs" / "webui.log", n // 2 + 1)]
+        return jsonify({"ok": True, "items": items[-n:]})
 
-@app.route("/api/version")
-def api_version():
-    v_path = ROOT / "data_runtime" / "deploy_version.json"
-    if v_path.exists():
-        try: return jsonify({"ok": True, **json.loads(v_path.read_text())})
-        except: pass
-    return jsonify({"ok": True, "deployed": "unknown", "files": {}})
+    @app.route("/api/version")
+    def version():
+        d = read_json(root / "data_runtime" / "deploy_version.json") or {}; d.setdefault("deployed", "unknown"); d["ok"] = True; return jsonify(d)
+    return app
+
+def run_webui(*, host: str = "0.0.0.0", port: int = 8080, password: Optional[str] = None, project_root: str = ".", **_: Any) -> int:
+    create_app(root=Path(project_root).resolve(), password=password).run(host=host, port=int(port), debug=False); return 0
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080, debug=False)
+    p = argparse.ArgumentParser(); p.add_argument("project_root", nargs="?", default=str(ROOT)); p.add_argument("--host", default="0.0.0.0"); p.add_argument("--port", type=int, default=8080); p.add_argument("--password", default=os.environ.get("WEBUI_PASSWORD")); a = p.parse_args(); run_webui(host=a.host, port=a.port, password=a.password, project_root=a.project_root)

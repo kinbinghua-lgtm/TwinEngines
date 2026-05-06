@@ -6,7 +6,7 @@ Polymarket CLOB 客户端 (实盘 IO).
     2. fetch_book          - 拉取盘口 (urllib + 重试 + 时间戳防缓存 + UA)
     3. fetch_account_equity_usdc - web3 链上 USDC.e + pUSD 余额之和 (V2 抵押多为 pUSD)
     4. fetch_usdc_allowance / fetch_pusd_allowance - 检查 collateral allowance
-    5. submit_order        - 入场: 默认先 FOK（可选）再 GTC；可用 entry_fok_first / entry_fok_fallback_gtc 覆盖
+    5. submit_order        - 入场: 纯 FOK 模式（Fill-or-Kill）
     6. poll_order          - 长 pending 自动 cancel
     7. cancel_order        - 主动撤单
     8. _sync_balance_allowance - 下单前同步链上余额到 CLOB
@@ -44,7 +44,6 @@ from .logging_setup import get_logger
 
 logger = get_logger(__name__)
 
-
 # ============================================================
 # 订单状态机
 # ============================================================
@@ -58,7 +57,6 @@ class OrderState(str, Enum):
     REJECTED = "REJECTED"
     TIMEOUT = "TIMEOUT"
     DRY_RUN_SHADOW = "DRY_RUN_SHADOW"
-
 
 @dataclass
 class OrderTicket:
@@ -74,10 +72,9 @@ class OrderTicket:
     last_polled_at_ms: Optional[int] = None
     fills: list[dict] = field(default_factory=list)
     last_error: Optional[str] = None
-    order_type: str = "GTC"          # 实盘固定 GTC 限价
+    order_type: str = "FOK"
     size_shares: Optional[float] = None
     filled_size_shares: float = 0.0  # 当前 exchange_order 上已成交股数；若 prior_leg>0 则仅本腿
-    prior_leg_filled_shares: float = 0.0   # FOK 等前一腿已成交 (与当前 oid 无关)
     reconcile_checkpoint_shares: float = 0.0  # 已向 reconciler 合并的累计股数 (用于增量 delta)
 
     def is_terminal(self) -> bool:
@@ -94,7 +91,6 @@ class OrderTicket:
         self.margin_locked = 0.0
         return released
 
-
 # ============================================================
 # 工具函数
 # ============================================================
@@ -102,12 +98,10 @@ class OrderTicket:
 def _tick_round(price: float, tick: float = 0.01) -> float:
     return math.floor(price / tick) * tick
 
-
 def _round_order_size_shares_up(raw_size: float, min_sz: float) -> float:
     """CLOB 对手数量精度（常见限制 taker 最多 4 位小数）；向上取整避免名义不足。"""
     x = max(float(raw_size), float(min_sz))
     return round(math.ceil(x * 10000 - 1e-9) / 10000, 4)
-
 
 def _http_get_json(url: str, *, timeout: float, user_agent: str) -> Any:
     req = urllib.request.Request(
@@ -121,11 +115,9 @@ def _http_get_json(url: str, *, timeout: float, user_agent: str) -> Any:
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
-
 def _is_balance_or_allowance_error(err_msg: str) -> bool:
     msg = (err_msg or "").lower()
     return "not enough balance" in msg or "allowance" in msg
-
 
 def _parse_filled_shares_from_clob_order(order: dict) -> float:
     """从 CLOB get_order 返回体解析已成交股数 (best-effort)."""
@@ -148,7 +140,6 @@ def _parse_filled_shares_from_clob_order(order: dict) -> float:
     except (TypeError, ValueError):
         pass
     return 0.0
-
 
 # ============================================================
 # 主客户端
@@ -610,8 +601,6 @@ class PolymarketClient:
         size_quote_usdc: float,
         client_order_id: str,
         size_shares: Optional[float] = None,
-        entry_fok_first: Optional[bool] = None,
-        entry_fok_fallback_gtc: Optional[bool] = None,
     ) -> OrderTicket:
         ticket = OrderTicket(
             client_order_id=client_order_id,
@@ -683,7 +672,7 @@ class PolymarketClient:
             )
             return ticket
 
-        # ---------------- 真实下单 (FOK 优先吃单 → GTC 回退) ----------------
+        # ---------------- 真实下单 (纯 FOK 模式) ----------------
         ticket.submitted_at_ms = int(time.time() * 1000)
         if ticket.side == "SELL":
             ticket.margin_locked = 0.0
@@ -695,42 +684,28 @@ class PolymarketClient:
         if ticket.side == "SELL":
             self._submit_exit_sell(
                 ticket,
-                entry_fok_first=entry_fok_first,
-                entry_fok_fallback_gtc=entry_fok_fallback_gtc,
             )
         else:
             self._submit_entry_buy(
                 ticket,
-                entry_fok_first=entry_fok_first,
-                entry_fok_fallback_gtc=entry_fok_fallback_gtc,
             )
         return ticket
 
     def _submit_entry_buy(
         self,
         ticket: OrderTicket,
-        *,
-        entry_fok_first: Optional[bool] = None,
-        entry_fok_fallback_gtc: Optional[bool] = None,
     ) -> None:
         self._submit_clob_limit_order(
             ticket,
-            entry_fok_first=entry_fok_first,
-            entry_fok_fallback_gtc=entry_fok_fallback_gtc,
             sync_conditional_token_id=None,
         )
 
     def _submit_exit_sell(
         self,
         ticket: OrderTicket,
-        *,
-        entry_fok_first: Optional[bool] = None,
-        entry_fok_fallback_gtc: Optional[bool] = None,
     ) -> None:
         self._submit_clob_limit_order(
             ticket,
-            entry_fok_first=entry_fok_first,
-            entry_fok_fallback_gtc=entry_fok_fallback_gtc,
             sync_conditional_token_id=str(ticket.token_id),
         )
 
@@ -738,23 +713,21 @@ class PolymarketClient:
         self,
         ticket: OrderTicket,
         *,
-        entry_fok_first: Optional[bool] = None,
-        entry_fok_fallback_gtc: Optional[bool] = None,
         sync_conditional_token_id: Optional[str] = None,
     ) -> None:
-        """限价单（买/卖）：FOK →（可选）GTC；股数按交易所精度向上取整。"""
+        """限价单（买/卖）：纯 FOK 模式；股数按交易所精度向上取整。"""
         if sync_conditional_token_id:
             self._sync_conditional_balance(sync_conditional_token_id)
         min_sz = float(self.platform.min_limit_order_shares)
         try:
             from py_clob_client_v2.clob_types import OrderArgsV2, OrderType  # type: ignore
+
             limit_price = max(0.01, float(ticket.price))
             if ticket.size_shares is not None and float(ticket.size_shares) > 0:
                 raw_size = float(ticket.size_shares)
             else:
                 raw_size = ticket.size_quote_usdc / limit_price if limit_price > 0 else 0.0
             size = _round_order_size_shares_up(raw_size, min_sz)
-            orig_target = float(size)
             if size < min_sz:
                 logger.warning(
                     "entry buy rejected: size %.2f < platform min %.1f coid=%s",
@@ -765,148 +738,85 @@ class PolymarketClient:
                 ticket.release_margin()
                 return
 
-            def _post_gtc(*, sz: float, log_tag: str) -> bool:
-                a = OrderArgsV2(
-                    token_id=ticket.token_id,
-                    price=limit_price,
-                    size=float(sz),
-                    side=ticket.side,
-                )
-                signed_gtc = self._real_client.create_order(a)
-                result = self._real_client.post_order(signed_gtc, OrderType.GTC)
-                oid = self._extract_order_id(result)
-                if not oid:
-                    logger.warning(
-                        "%s GTC no orderID result=%s coid=%s",
-                        log_tag, repr(result)[:200], ticket.client_order_id,
-                    )
-                    return False
-                ticket.exchange_order_id = oid
-                ticket.order_type = "GTC"
-                ticket.size_shares = float(sz)
-                ticket.state = OrderState.SUBMITTED
-                logger.info(
-                    "%s GTC accepted size=%.2f price=%.4f oid=%s coid=%s",
-                    log_tag, sz, limit_price, oid, ticket.client_order_id,
-                )
-                return True
-
-            fok_first = bool(getattr(self.runtime_cfg, "entry_exec_fok_first", True))
-            if entry_fok_first is not None:
-                fok_first = bool(entry_fok_first)
-            fok_fb = bool(getattr(self.runtime_cfg, "entry_fok_fallback_gtc", True))
-            if entry_fok_fallback_gtc is not None:
-                fok_fb = bool(entry_fok_fallback_gtc)
-
-            if fok_first:
-                try:
-                    args_fok = OrderArgsV2(
-                        token_id=ticket.token_id,
-                        price=limit_price,
-                        size=orig_target,
-                        side=ticket.side,
-                    )
-                    signed_fok = self._real_client.create_order(args_fok)
-                    result_fok = self._real_client.post_order(signed_fok, OrderType.FOK)
-                    oid_fok = self._extract_order_id(result_fok)
-                    if oid_fok:
-                        ticket.exchange_order_id = oid_fok
-                        ticket.order_type = "FOK"
-                        ticket.size_shares = orig_target
-                        self.refresh_order_truth(
-                            ticket, delay_ms=int(self.runtime_cfg.order_ghost_confirm_delay_ms),
-                        )
-                        if ticket.state == OrderState.FILLED:
-                            logger.info(
-                                "FOK filled size=%.2f price=%.4f oid=%s coid=%s",
-                                orig_target, limit_price, oid_fok, ticket.client_order_id,
-                            )
-                            return
-                        matched = float(ticket.filled_size_shares or 0.0)
-                        if ticket.state == OrderState.PARTIAL and matched > 1e-9:
-                            rem_raw = max(orig_target - matched, 0.0)
-                            rem = _round_order_size_shares_up(rem_raw, min_sz)
-                            if rem < min_sz - 1e-9:
-                                logger.info(
-                                    "FOK partial dust remainder matched=%.4f rem=%.4f coid=%s",
-                                    matched, rem, ticket.client_order_id,
-                                )
-                                ticket.prior_leg_filled_shares = 0.0
-                                ticket.reconcile_checkpoint_shares = 0.0
-                                ticket.state = OrderState.FILLED
-                                ticket.order_type = "FOK"
-                                ticket.size_shares = matched
-                                ticket.filled_size_shares = matched
-                                ticket.margin_locked = 0.0
-                                return
-                            if fok_fb:
-                                logger.info(
-                                    "FOK partial matched=%.4f GTC remainder=%.4f price=%.4f coid=%s",
-                                    matched, rem, limit_price, ticket.client_order_id,
-                                )
-                                ticket.prior_leg_filled_shares = matched
-                                ticket.filled_size_shares = 0.0
-                                ticket.reconcile_checkpoint_shares = 0.0
-                                ticket.exchange_order_id = None
-                                ticket.last_error = None
-                                ticket.margin_locked = (
-                                    0.0
-                                    if ticket.side.upper() == "SELL"
-                                    else rem * limit_price
-                                )
-                                ticket.state = OrderState.SUBMITTED
-                                if _post_gtc(sz=rem, log_tag="FOK+rem"):
-                                    return
-                                ticket.state = OrderState.REJECTED
-                                ticket.last_error = "gtc_remainder_post_failed"
-                                ticket.release_margin()
-                                return
-                            ticket.state = OrderState.FILLED
-                            ticket.order_type = "FOK"
-                            ticket.size_shares = matched
-                            ticket.filled_size_shares = matched
-                            ticket.margin_locked = 0.0
-                            return
-                        logger.warning(
-                            "FOK no immediate fill state=%s coid=%s (fallback=%s)",
-                            ticket.state.value, ticket.client_order_id, fok_fb,
-                        )
-                    else:
-                        logger.warning(
-                            "FOK no orderID result=%s coid=%s (fallback=%s)",
-                            repr(result_fok)[:200], ticket.client_order_id, fok_fb,
-                        )
-                except Exception as e:
-                    err_fok = str(e)
-                    logger.warning(
-                        "FOK post_order exception (fallback=%s): %s coid=%s",
-                        fok_fb, err_fok, ticket.client_order_id,
-                    )
-
-                if not fok_fb:
+            ticket.order_type = "FOK"
+            ticket.size_shares = float(size)
+            args_fok = OrderArgsV2(
+                token_id=ticket.token_id,
+                price=limit_price,
+                size=float(size),
+                side=ticket.side,
+            )
+            signed_fok = self._real_client.create_order(args_fok)
+            try:
+                result_fok = self._real_client.post_order(signed_fok, OrderType.FOK)
+            except Exception as e:
+                err = str(e)
+                logger.warning("FOK post_order exception: %s coid=%s", err, ticket.client_order_id)
+                if "FOK_ORDER_NOT_FILLED_ERROR" in err or "not filled" in err.lower():
                     ticket.state = OrderState.REJECTED
-                    ticket.last_error = ticket.last_error or "fok_only_no_fill"
+                    ticket.last_error = "fok_no_fill"
+                else:
+                    ticket.state = OrderState.TIMEOUT
+                    ticket.last_error = f"post_order_exception:{err[:160]}"
+                ticket.release_margin()
+                return
+
+            if isinstance(result_fok, dict):
+                success = result_fok.get("success")
+                err_msg = str(result_fok.get("errorMsg") or result_fok.get("error") or "")
+                if success is False:
+                    ticket.state = OrderState.REJECTED
+                    if "FOK_ORDER_NOT_FILLED_ERROR" in err_msg or "not filled" in err_msg.lower():
+                        ticket.last_error = "fok_no_fill"
+                    else:
+                        ticket.last_error = err_msg or "fok_rejected"
                     ticket.release_margin()
                     return
 
-                ticket.exchange_order_id = None
-                ticket.last_error = None
-                ticket.margin_locked = (
-                    0.0 if ticket.side.upper() == "SELL" else float(ticket.size_quote_usdc)
-                )
-                ticket.state = OrderState.SUBMITTED
-                ticket.prior_leg_filled_shares = 0.0
-                ticket.reconcile_checkpoint_shares = 0.0
-                ticket.filled_size_shares = 0.0
-
-            if not _post_gtc(sz=orig_target, log_tag="entry"):
-                ticket.state = OrderState.REJECTED
+            oid_fok = self._extract_order_id(result_fok)
+            if not oid_fok:
+                logger.warning("FOK no orderID result=%s coid=%s", repr(result_fok)[:200], ticket.client_order_id)
+                ticket.state = OrderState.TIMEOUT
+                ticket.last_error = "unknown_no_order_id"
                 ticket.release_margin()
+                return
+
+            ticket.exchange_order_id = oid_fok
+            self.refresh_order_truth(
+                ticket, delay_ms=int(self.runtime_cfg.order_ghost_confirm_delay_ms),
+            )
+            matched = float(ticket.filled_size_shares or 0.0)
+            if ticket.state == OrderState.FILLED and matched > 1e-9:
+                logger.info(
+                    "FOK filled size=%.4f price=%.4f oid=%s coid=%s",
+                    matched, limit_price, oid_fok, ticket.client_order_id,
+                )
+                return
+            if ticket.state == OrderState.FILLED and matched <= 1e-9:
+                ticket.state = OrderState.TIMEOUT
+                ticket.last_error = "unknown_filled_size"
+                ticket.release_margin()
+                return
+            if ticket.state == OrderState.PARTIAL and matched > 1e-9:
+                logger.warning(
+                    "FOK partial matched=%.4f target=%.4f price=%.4f oid=%s coid=%s",
+                    matched, float(size), limit_price, oid_fok, ticket.client_order_id,
+                )
+                ticket.margin_locked = 0.0
+                return
+            if ticket.state in (OrderState.CANCELLED, OrderState.REJECTED):
+                ticket.last_error = ticket.last_error or "fok_no_fill"
+                ticket.release_margin()
+                return
+
+            ticket.state = OrderState.TIMEOUT
+            ticket.last_error = "unknown_after_order_query"
+            ticket.release_margin()
         except Exception as e:
             err_msg = str(e)
             logger.exception("clob limit order exception: %s coid=%s", err_msg, ticket.client_order_id)
-            ticket.last_error = err_msg
-            ticket.state = OrderState.REJECTED
+            ticket.last_error = f"unknown:{err_msg[:160]}"
+            ticket.state = OrderState.TIMEOUT
             ticket.release_margin()
             if _is_balance_or_allowance_error(err_msg):
                 self._trip_circuit(f"balance_or_allowance:{err_msg[:80]}")

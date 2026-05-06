@@ -97,17 +97,10 @@ class PolymarketRuntimeCfg:
     # 订单轮询
     order_poll_interval_sec: float = 1.0
     order_poll_max_wait_sec: float = 30.0            # 长时间 pending 主动取消并重新评估
-    fok_fallback_to_gtc: bool = False                # 兼容旧 .env；见 entry_fok_fallback_gtc
-    # 信号入场: 略跨 best_ask + 先 FOK 吃单 + 未成交再 GTC（Polymarket 常见提高成交率做法）
+    # 信号入场: 略跨 best_ask + FOK 吃单（Fill-or-Kill，全成或取消）
     entry_buy_cross_ticks: int = 2                 # 在 best_ask 上抬几个最小报价 tick（默认 0.01）
-    entry_exec_fok_first: bool = True              # 先下 FOK（全成或取消）
-    entry_fok_fallback_gtc: bool = False           # FOK 未成直接取消 (不转 GTC)
-    # GTC 限价单: 等待成交的最长时间 (秒), 与窗口结束时刻取较早者触发撤单
-    gtc_max_wait_sec: float = 5.0
     # 成交回报后二次确认订单状态 (毫秒), 缓解幽灵成交
     order_ghost_confirm_delay_ms: int = 400
-    # 同一窗口内连续 GTC 超时未成交达此次数后, 暂停本窗口内后续挂单
-    gtc_window_max_consecutive_timeouts: int = 3
 
     # 行情/数据
     book_max_staleness_sec: float = 5.0              # 盘口超过此值视为过期, 不下单
@@ -238,16 +231,8 @@ def load_polymarket_runtime_cfg(env_file: Optional[str] = None) -> PolymarketRun
         ws_retry_delay_sec=_env_float("WS_RETRY_DELAY_SEC", 5.0),
         order_poll_interval_sec=_env_float("ORDER_POLL_INTERVAL_SEC", 1.0),
         order_poll_max_wait_sec=_env_float("ORDER_POLL_MAX_WAIT_SEC", 30.0),
-        fok_fallback_to_gtc=_env_bool("FOK_FALLBACK_TO_GTC", False),
         entry_buy_cross_ticks=max(0, _env_int("ENTRY_BUY_CROSS_TICKS", 2)),
-        entry_exec_fok_first=_env_bool("ENTRY_EXEC_FOK_FIRST", True),
-        entry_fok_fallback_gtc=_env_bool(
-            "ENTRY_FOK_FALLBACK_GTC",
-            _env_bool("FOK_FALLBACK_TO_GTC", True),
-        ),
-        gtc_max_wait_sec=_env_float("GTC_MAX_WAIT_SEC", 5.0),
         order_ghost_confirm_delay_ms=_env_int("ORDER_GHOST_CONFIRM_DELAY_MS", 400),
-        gtc_window_max_consecutive_timeouts=_env_int("GTC_WINDOW_MAX_CONSECUTIVE_TIMEOUTS", 3),
         book_max_staleness_sec=_env_float("BOOK_MAX_STALENESS_SEC", 5.0),
         daily_max_loss_usdc=_env_float("DAILY_MAX_LOSS_USDC", 50.0),
         naked_daily_drawdown_stop=_env_float("NAKED_DAILY_DRAWDOWN_STOP", 0.05),

@@ -56,7 +56,6 @@ from .model.persist import StrategyArtifact, load_artifact, save_artifact
 from .risk.limits import RiskCfg
 from .signals import SignalThresholds
 
-
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="twinengines")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -143,7 +142,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sw.add_argument("--shadow-book-mode", choices=["exact", "simulate"], default="exact",
                     help="盘口替换模式: exact=仅时间精确匹配; simulate=用快照经验分布外推")
     sw.add_argument("--no-risk-guard", action="store_true",
-                    help="诊断模式: 关闭 RiskGuard (仅用于归因分析, 不用于生产参数结论)")
+                    help="诊断模式")
     sw.add_argument("--friction-mode", choices=["off", "maker", "taker"], default="off")
     sw.add_argument("--taker-slippage-bps", type=float, default=300.0)
     sw.add_argument("--independent-engine-dd", action="store_true",
@@ -644,7 +643,6 @@ def _build_parser() -> argparse.ArgumentParser:
 
     return p
 
-
 def _load_or_synthesize_1m(args: argparse.Namespace) -> pd.DataFrame:
     if args.bars1m:
         return pd.read_parquet(args.bars1m)
@@ -653,12 +651,10 @@ def _load_or_synthesize_1m(args: argparse.Namespace) -> pd.DataFrame:
         return bars.df
     raise SystemExit("must provide --bars1m or --synthetic-minutes > 0")
 
-
 def _load_1s(args: argparse.Namespace) -> pd.DataFrame | None:
     if not args.bars1s:
         return None
     return pd.read_parquet(args.bars1s)
-
 
 def _cmd_download(args: argparse.Namespace) -> int:
     end = parse_iso_date(args.end) if args.end else yesterday_utc()
@@ -676,7 +672,6 @@ def _cmd_download(args: argparse.Namespace) -> int:
         df.to_parquet(args.out, index=False)
         print(f"wrote {args.out}", flush=True)
     return 0
-
 
 def _cmd_naked_third_digit_live(args: argparse.Namespace) -> int:
     from pathlib import Path
@@ -722,15 +717,13 @@ def _cmd_naked_third_digit_live(args: argparse.Namespace) -> int:
         sec_path_stride=max(1, int(args.sec_path_stride)),
         bare_formula_eval=bool(args.bare_formula_eval),
         log_p_rev_range=bool(args.log_p_rev_range),
-        use_funds_manager=not bool(args.no_funds_manager),
-        use_kelly_sizing=bool(args.kelly_sizing),
+use_kelly_sizing=bool(args.kelly_sizing),
         kelly_fraction=float(args.kelly_fraction),
         kelly_max_stake_ratio=float(args.kelly_max_stake_ratio),
         live_log_jsonl=Path(str(args.live_log_jsonl)),
         max_runtime_min=float(args.max_runtime_min),
     )
     return 0
-
 
 def _cmd_sec_causal_eval(args: argparse.Namespace) -> int:
     from .model.sec_kline_causal_eval import download_btc_1m_1s_range, run_sec_kline_causal_eval
@@ -794,7 +787,6 @@ def _cmd_sec_causal_eval(args: argparse.Namespace) -> int:
     print(json.dumps({k: doc[k] for k in doc if k in ("download", "range_tag", "wall_clock_total_sec", "sec_path_eval", "minute_baseline_eval", "error", "fallback_attempt")}, ensure_ascii=False, default=str), flush=True)
     print(f"[sec-causal-eval] wrote {out_path}", flush=True)
     return code
-
 
 def _cmd_sec_short_multi_valid(args: argparse.Namespace) -> int:
     from .model.sec_kline_causal_eval import (
@@ -901,7 +893,6 @@ def _cmd_sec_short_multi_valid(args: argparse.Namespace) -> int:
     print(f"[sec-short-multi-valid] wrote {out_path}", flush=True)
     return code
 
-
 def _cmd_cross_window_next_open(args: argparse.Namespace) -> int:
     from .data.cross_window import pair_cross_window_samples
     from .data.window import build_windows
@@ -996,7 +987,6 @@ def _cmd_cross_window_next_open(args: argparse.Namespace) -> int:
     print(f"[cross-window-next-open] wrote {out_path}", flush=True)
     return code
 
-
 def _cmd_fit_prefix_survival(args: argparse.Namespace) -> int:
     from .data.binance_downloader import DownloadConfig, download_range
     from .live.third_digit_naked import load_third_digit_dynamic_params
@@ -1076,8 +1066,6 @@ def _cmd_fit_prefix_survival(args: argparse.Namespace) -> int:
     }, ensure_ascii=False), flush=True)
     return 0
 
-
-
 def _cmd_sequence_transition(args: argparse.Namespace) -> int:
     from .analysis.sequence_transition import run_sequence_transition_report
     from .data.binance_downloader import DownloadConfig, download_range
@@ -1118,8 +1106,6 @@ def _cmd_sequence_transition(args: argparse.Namespace) -> int:
     print(json.dumps({k: doc[k] for k in doc if k in ("download", "n_windows", "n_pairs", "base_rates", "holdout_rule_check", "error")}, ensure_ascii=False, default=str), flush=True)
     print(f"[sequence-transition] wrote {out_path}", flush=True)
     return 2 if doc.get("error") else 0
-
-
 
     from .model.third_digit_tune_validate import run_third_digit_tune_and_validate_synthetic
 
@@ -1166,7 +1152,6 @@ def _cmd_sequence_transition(args: argparse.Namespace) -> int:
         Path(args.out_json).write_text(txt, encoding="utf-8")
         print(f"[third-digit-tune-validate] wrote {args.out_json}", flush=True)
     return 0
-
 
 def _cmd_survival_validate(args: argparse.Namespace) -> int:
     import json
@@ -1226,7 +1211,6 @@ def _cmd_survival_validate(args: argparse.Namespace) -> int:
         print(f"[survival-validate] wrote {args.out_json}", flush=True)
     print(json.dumps(payload, ensure_ascii=False, indent=2), flush=True)
     return 0
-
 
 def _cmd_pipeline(args: argparse.Namespace) -> int:
     bars_1m = _load_or_synthesize_1m(args)
@@ -1351,7 +1335,6 @@ def _cmd_pipeline(args: argparse.Namespace) -> int:
     print(json.dumps(out, indent=2, ensure_ascii=False, default=str))
     return 0
 
-
 def _cmd_signal(args: argparse.Namespace) -> int:
     art = load_artifact(args.artifact)
     from .signals import (
@@ -1406,7 +1389,6 @@ def _cmd_signal(args: argparse.Namespace) -> int:
     }
     print(json.dumps(out, indent=2, ensure_ascii=False, default=str))
     return 0
-
 
 def _cmd_growth_path(args: argparse.Namespace) -> int:
     from .analysis.growth_path import run_growth_path
@@ -1463,7 +1445,6 @@ def _cmd_growth_path(args: argparse.Namespace) -> int:
         "n_trades", "win_rate", "bust", "windows_to_500", "windows_to_10k"
     ]].to_string(index=False))
     return 0
-
 
 def _cmd_v4_vs_v5(args: argparse.Namespace) -> int:
     from .analysis.v4_vs_v5_diagnostics import diagnose_v4_vs_v5
@@ -1523,7 +1504,6 @@ def _cmd_v4_vs_v5(args: argparse.Namespace) -> int:
     print(json.dumps(out, indent=2, ensure_ascii=False, default=str))
     return 0
 
-
 def _cmd_sweep(args: argparse.Namespace) -> int:
     from .data.window import build_windows
     from .model.persist import load_artifact
@@ -1581,7 +1561,6 @@ def _cmd_sweep(args: argparse.Namespace) -> int:
     Path(args.out).write_text(json.dumps(out, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
     print(df_sorted.to_string(index=False))
     return 0
-
 
 def _cmd_book_compare(args: argparse.Namespace) -> int:
     from .data.window import build_windows
@@ -1688,7 +1667,6 @@ def _cmd_book_compare(args: argparse.Namespace) -> int:
     print(json.dumps(out, indent=2, ensure_ascii=False, default=str))
     return 0
 
-
 def _cmd_trend_diagnose(args: argparse.Namespace) -> int:
     from .analysis.trend_diagnostics import diagnose_trend_filters
     from .data.window import build_windows
@@ -1749,7 +1727,6 @@ def _cmd_trend_diagnose(args: argparse.Namespace) -> int:
     Path(args.out).write_text(json.dumps(out, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
     print(json.dumps(out, indent=2, ensure_ascii=False, default=str))
     return 0
-
 
 def _cmd_audit(args: argparse.Namespace) -> int:
     from .analysis.sequence_distribution import analyze_sequence_distribution
@@ -1823,7 +1800,6 @@ def _cmd_audit(args: argparse.Namespace) -> int:
     Path(args.out).write_text(json.dumps(out, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
     print(json.dumps(out, indent=2, ensure_ascii=False, default=str))
     return 0
-
 
 def _cmd_connectivity(args: argparse.Namespace) -> int:
     from .io import (
@@ -1974,14 +1950,12 @@ def _cmd_connectivity(args: argparse.Namespace) -> int:
     print("\n[connectivity] all checks passed.", file=sys.stderr)
     return 0
 
-
 def _cmd_shadow_window_stats(args: argparse.Namespace) -> int:
     from .analysis.shadow_window_stats import build_shadow_window_report
 
     rep = build_shadow_window_report(args.state_db)
     print(json.dumps(rep, indent=2, ensure_ascii=False))
     return 0
-
 
 def _cmd_p_rev_calibrate(args: argparse.Namespace) -> int:
     from .analysis.p_rev_time_calibration import build_p_rev_time_calibration
@@ -1996,7 +1970,6 @@ def _cmd_p_rev_calibrate(args: argparse.Namespace) -> int:
     )
     print(json.dumps(rep, indent=2, ensure_ascii=False, default=str))
     return 0
-
 
 def _cmd_snapshot_config(args: argparse.Namespace) -> int:
     from .io.friction_snapshot import build_snapshot_proposal
@@ -2013,7 +1986,6 @@ def _cmd_snapshot_config(args: argparse.Namespace) -> int:
     print(json.dumps(rep, indent=2, ensure_ascii=False, default=str))
     return 0
 
-
 def _cmd_apply_snapshot(args: argparse.Namespace) -> int:
     from .io.friction_snapshot import apply_snapshot_proposal
 
@@ -2026,7 +1998,6 @@ def _cmd_apply_snapshot(args: argparse.Namespace) -> int:
     )
     print(json.dumps(out, indent=2, ensure_ascii=False, default=str))
     return 0
-
 
 def _cmd_shadow_report(args: argparse.Namespace) -> int:
     from .analysis.shadow_run_report import build_report, report_to_markdown
@@ -2051,7 +2022,6 @@ def _cmd_shadow_report(args: argparse.Namespace) -> int:
     if h.get("suspend_live_plan"):
         return 2
     return 0
-
 
 def _cmd_smoke_real_order(args: argparse.Namespace) -> int:
     """单笔最小合规限价买单：用于 VPS 实盘链路验证（真实扣款）。"""
@@ -2222,7 +2192,6 @@ def _cmd_smoke_real_order(args: argparse.Namespace) -> int:
     print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
     return 0 if ok_done else 1
 
-
 def _cmd_live_run(args: argparse.Namespace) -> int:
     from .io import LiveRunner
 
@@ -2268,9 +2237,8 @@ def _cmd_live_run(args: argparse.Namespace) -> int:
     ok = runner.start(run_forever=True)
     return 0 if ok else 2
 
-
 def _cmd_webui(args: argparse.Namespace) -> int:
-    from .io.webui import run_webui
+    from .io.webui_server import run_webui
     if not args.password or len(args.password) < 6:
         print("[webui] --password is required and must be >= 6 chars", file=sys.stderr)
         return 2
@@ -2286,7 +2254,6 @@ def _cmd_webui(args: argparse.Namespace) -> int:
         shadow_signals_path=args.shadow_signals,
         default_artifact=args.default_artifact,
     )
-
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
@@ -2343,7 +2310,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "apply-snapshot":
         return _cmd_apply_snapshot(args)
     return 1
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
