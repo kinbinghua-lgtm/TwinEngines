@@ -526,102 +526,158 @@ class LiveRunner:
             return None
 
     def _on_shadow_window_close(self, window_id: str) -> None:
+        """窗口关闭时结算影子盘和真实盘。"""
         global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR
         _SIM_FILLED.discard(window_id)
         _REAL_WINDOW_ORDERS.pop(window_id, None)
         _SIM_WIN_BUDGET.pop(window_id, None)
         _SIM_WIN_DIR.pop(window_id, None)
-
-
         _SIM_CURRENT.clear()
+        
         try:
-            import json as _j, urllib.request as _u, os as _o
+            import json as _j, urllib.request as _u, os as _o, sqlite3 as _sql
             ws = int(window_id.replace("w", ""))
             url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=1m&startTime=" + str(ws) + "&limit=5"
             data = _j.loads(_u.urlopen(_u.Request(url, headers={"User-Agent": "TE/1.0"}), timeout=8).read())
-            if len(data) >= 5:
-                bl = float(data[0][1]); seq = "".join("1" if float(k[4]) > bl else "0" for k in data)
-                actual_dir = "up" if seq[4] == "1" else "down"
-                # 汇总本窗口所有 partial fills
-                best_dir = ""; total_fill = 0.0; total_pnl = 0.0; first_sec = 0
-                fills = []  # [(fill_amt, fill_ask)]
-                p = "/root/TwinEngines/logs/shadow_orders.jsonl"
-                if _o.path.exists(p):
-                    for line in open(p).readlines()[-500:]:
-                        if window_id not in line:
-                            continue
-                        try:
-                            o = _j.loads(line.strip())
-                            s = str(o.get("status") or "").lower()
-                            if s == "filled" and o.get("fill_amount", 0) > 0:
-                                fa = float(o.get("fill_amount") or 0)
-                                if not best_dir:
-                                    best_dir = o.get("best_dir", "")
-                                    first_sec = int(300 - float(o.get("T_remaining") or 0))
-                                # 从盘口价格反推买入价
-                                if o.get("best_dir") == "up":
-                                    fask = float(o.get("ask_up") or 0)
-                                else:
-                                    fask = float(o.get("ask_down") or 0)
-                                fills.append((fa, fask))
-                        except Exception:
-                            pass
-                if not fills:
-                    return
-                # 汇总 PnL: 每笔 fill 独立计算盈亏（不同价位可能不同）
-                total_fill = sum(f[0] for f in fills)
-                for fa, fask in fills:
-                    won = actual_dir == best_dir if best_dir else False
-                    if won and fask > 0:
-                        total_pnl += fa * (1.0 / fask - 1.0)
-                    elif won:
-                        total_pnl += fa * 0.50
-                    else:
-                        total_pnl += -fa
-                # 加权平均买入价
-                avg_ask = sum(f[0] * f[1] for f in fills) / total_fill if total_fill > 0 else 0
-                # 从最近一条结算记录推算权益
-                last_eq = self._sim_equity
-                try:
-                    p2 = "/root/TwinEngines/logs/window_results.jsonl"
-                    if _o.path.exists(p2):
-                        tail = open(p2, "r").readlines()[-1:]
-                        if tail:
-                            last = _j.loads(tail[0].strip())
-                            last_eq = float(last.get("equity") or last_eq)
-                except Exception:
-                    pass
-                self._sim_equity = last_eq + total_pnl
-                is_real = not (self.cfg.dry_run_signals or self.cfg.record_shadow_signals)
-                res = _j.dumps({
-                    "window_id": window_id, "seq": seq, "dir": best_dir,
-                    "won": won, "pnl": round(total_pnl, 2),
-                    "equity": round(self._sim_equity, 2),
-                    "ask": round(avg_ask, 4), "fill_amt": round(total_fill, 2),
-                    "fill_sec": first_sec, "partials": len(fills),
-                    "mode": "real" if is_real else "shadow",
-                })
-                # 确保文件尾有换行符, 防止 JSON 粘连
-                with open("/root/TwinEngines/logs/window_results.jsonl", "ab+") as _f:
-                    _f.seek(0, 2)  # SEEK_END
-                    pos = _f.tell()
-                    if pos > 0:
-                        _f.seek(pos - 1)
-                        if _f.read(1) != b"\n":
-                            _f.write(b"\n")
-                    _f.write((res + "\n").encode("utf-8"))
-                # 真实盘单独写一份 (供 WebUI 显示)
-                if is_real:
-                    with open("/root/TwinEngines/logs/real_results.jsonl", "ab+") as _rf:
-                        _rf.seek(0, 2)
-                        if _rf.tell() > 0:
-                            _rf.seek(_rf.tell() - 1)
-                            if _rf.read(1) != b"\n":
-                                _rf.write(b"\n")
-                        _rf.write((res + "\n").encode("utf-8"))
-                open("/root/TwinEngines/data_runtime/sim_equity.txt", "w").write(str(round(self._sim_equity, 2)) + chr(10))
+            if len(data) < 5:
+                return
+            bl = float(data[0][1])
+            seq = "".join("1" if float(k[4]) > bl else "0" for k in data)
+            actual_dir = "up" if seq[4] == "1" else "down"
+
+            self._settle_shadow(window_id, seq, actual_dir, ws, _j, _o)
+            self._settle_real(window_id, seq, actual_dir, ws, _j, _o, _sql)
         except Exception:
             pass
+
+    def _settle_shadow(self, window_id, seq, actual_dir, ws, _j, _o):
+        fills = []
+        p = "/root/TwinEngines/logs/shadow_orders.jsonl"
+        if not _o.path.exists(p):
+            return
+        for line in open(p).readlines()[-500:]:
+            if window_id not in line:
+                continue
+            try:
+                o = _j.loads(line.strip())
+                if str(o.get("status") or "").lower() == "filled" and o.get("fill_amount", 0) > 0:
+                    fa = float(o.get("fill_amount") or 0)
+                    bd = o.get("best_dir", "")
+                    fs = int(300 - float(o.get("T_remaining") or 0))
+                    fask = float(o.get("ask_up") if bd == "up" else o.get("ask_down") or 0)
+                    fills.append((fa, fask, bd, fs))
+            except Exception:
+                pass
+        if not fills:
+            return
+        total_fill = sum(f[0] for f in fills)
+        best_dir = fills[0][2]
+        first_sec = fills[0][3]
+        total_pnl = 0.0
+        won = False
+        for fa, fask, _, _ in fills:
+            won = actual_dir == best_dir
+            if won and fask > 0:
+                total_pnl += fa * (1.0 / fask - 1.0)
+            elif won:
+                total_pnl += fa * 0.50
+            else:
+                total_pnl += -fa
+        avg_ask = sum(f[0] * f[1] for f in fills) / total_fill if total_fill > 0 else 0
+        last_eq = self._sim_equity
+        try:
+            p2 = "/root/TwinEngines/logs/window_results.jsonl"
+            if _o.path.exists(p2):
+                for tail_line in reversed(open(p2, "r").readlines()[-20:]):
+                    tl = _j.loads(tail_line.strip())
+                    if tl.get("mode") == "shadow":
+                        last_eq = float(tl.get("equity") or last_eq)
+                        break
+        except Exception:
+            pass
+        self._sim_equity = last_eq + total_pnl
+        res = _j.dumps({
+            "window_id": window_id, "seq": seq, "dir": best_dir,
+            "won": won, "pnl": round(total_pnl, 2),
+            "equity": round(self._sim_equity, 2),
+            "ask": round(avg_ask, 4), "fill_amt": round(total_fill, 2),
+            "fill_sec": first_sec, "partials": len(fills), "mode": "shadow",
+        })
+        self._append_jsonl("/root/TwinEngines/logs/window_results.jsonl", res)
+        try:
+            open("/root/TwinEngines/data_runtime/sim_equity.txt", "w").write(str(round(self._sim_equity, 2)) + chr(10))
+        except Exception:
+            pass
+
+    def _settle_real(self, window_id, seq, actual_dir, ws, _j, _o, _sql):
+        if not self.cfg.runtime.enable_real_orders:
+            return
+        db_path = "/root/TwinEngines/data_runtime/state.sqlite"
+        if not _o.path.exists(db_path):
+            return
+        fills = []
+        try:
+            con = _sql.connect(db_path, timeout=2.0)
+            cur = con.execute(
+                "SELECT ts_ms, payload FROM audit_events WHERE kind='order_filled' AND payload LIKE ? ORDER BY id",
+                (f'%{window_id}%',)
+            )
+            for ts_ms, payload in cur.fetchall():
+                try:
+                    o = _j.loads(payload)
+                    if o.get("window_id") == window_id:
+                        fa = float(o.get("size_usdc") or 0)
+                        fask = float(o.get("price") or 0)
+                        bd = o.get("direction", "")
+                        fs = int((ts_ms - ws) / 1000)
+                        fills.append((fa, fask, bd, fs))
+                except Exception:
+                    pass
+            con.close()
+        except Exception:
+            return
+        if not fills:
+            return
+        total_fill = sum(f[0] for f in fills)
+        best_dir = fills[0][2]
+        first_sec = fills[0][3]
+        total_pnl = 0.0
+        won = False
+        for fa, fask, _, _ in fills:
+            won = actual_dir == best_dir
+            if won and fask > 0:
+                total_pnl += fa * (1.0 / fask - 1.0)
+            elif won:
+                total_pnl += fa * 0.50
+            else:
+                total_pnl += -fa
+        avg_ask = sum(f[0] * f[1] for f in fills) / total_fill if total_fill > 0 else 0
+        real_equity = 0.0
+        try:
+            bal_file = "/root/TwinEngines/data_runtime/real_balance.json"
+            if _o.path.exists(bal_file):
+                bal = _j.loads(open(bal_file).read())
+                real_equity = float(bal.get("balance_usdc") or 0)
+        except Exception:
+            pass
+        res = _j.dumps({
+            "window_id": window_id, "seq": seq, "dir": best_dir,
+            "won": won, "pnl": round(total_pnl, 2),
+            "equity": round(real_equity, 2),
+            "ask": round(avg_ask, 4), "fill_amt": round(total_fill, 2),
+            "fill_sec": first_sec, "partials": len(fills), "mode": "real",
+        })
+        self._append_jsonl("/root/TwinEngines/logs/real_results.jsonl", res)
+
+    @staticmethod
+    def _append_jsonl(path: str, line: str) -> None:
+        with open(path, "ab+") as f:
+            f.seek(0, 2)
+            if f.tell() > 0:
+                f.seek(f.tell() - 1)
+                if f.read(1) != b"\n":
+                    f.write(b"\n")
+            f.write((line + "\n").encode("utf-8"))
 
     def _on_shadow_signal_event(self, event: dict) -> None:
         global _SIM_FILLED, _SIM_CURRENT
