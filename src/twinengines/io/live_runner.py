@@ -1087,6 +1087,23 @@ class LiveRunner:
                     attempt_in_flight, switch_count, total_attempts,
                 )
                 return None
+        elif float(state.get("filled_shares", 0.0) or 0.0) <= 1e-9 and not bool(state.get("unknown_outcome")) and not bool(state.get("attempt_in_flight")):
+            target_shares = float(target_quote) / max(float(limit_price), 0.01)
+            if target_shares + 1e-9 < min_shares:
+                logger.info(
+                    "real window refresh skip below min shares window_id=%s dir=%s shares=%.4f",
+                    window_id, best_dir, target_shares,
+                )
+                return None
+            state.update({
+                "side_label": side_label,
+                "token_id": token_id,
+                "target_quote": float(target_quote),
+                "target_shares": float(target_shares),
+                "remaining_shares": float(target_shares),
+                "limit_price": float(limit_price),
+                "last_plan_refresh_ts_ms": int(time.time() * 1000),
+            })
 
         if state.get("locked") or state.get("unknown_outcome") or state.get("attempt_in_flight"):
             return None
@@ -1103,6 +1120,39 @@ class LiveRunner:
             state["locked"] = True
             state["lock_reason"] = "dust_remaining"
             return None
+
+        if self.poly_client is not None:
+            try:
+                depth = self.poly_client.fetch_book_depth(str(state["token_id"]), max_levels=20)
+                asks = depth.get("asks", []) if isinstance(depth, dict) else []
+                if depth.get("stale") or not asks:
+                    state["last_error"] = "preflight_depth_unavailable"
+                    logger.info("real FOK preflight depth unavailable window_id=%s", window_id)
+                    return None
+                plan = self._compute_depth_plan(
+                    asks=asks,
+                    target_quote=remaining_quote,
+                    max_price=float(state["limit_price"]),
+                    depth_haircut=0.70,
+                )
+                safe_shares = float(plan.get("safe_shares", 0.0) or 0.0)
+                safe_quote = float(plan.get("safe_quote", 0.0) or 0.0)
+                if safe_shares + 1e-9 < remaining_shares or safe_quote + 1e-9 < remaining_quote:
+                    state["last_error"] = "preflight_depth_insufficient"
+                    state["preflight_safe_quote"] = round(safe_quote, 2)
+                    state["preflight_safe_shares"] = round(safe_shares, 4)
+                    state["preflight_required_quote"] = round(remaining_quote, 2)
+                    state["preflight_required_shares"] = round(remaining_shares, 4)
+                    logger.info(
+                        "real FOK preflight depth insufficient window_id=%s dir=%s safe_quote=%.2f req_quote=%.2f safe_shares=%.4f req_shares=%.4f limit=%.4f",
+                        window_id, state.get("direction"), safe_quote, remaining_quote,
+                        safe_shares, remaining_shares, float(state["limit_price"]),
+                    )
+                    return None
+            except Exception as e:
+                state["last_error"] = "preflight_depth_error"
+                logger.warning("real FOK preflight depth error window_id=%s err=%s", window_id, e)
+                return None
 
         state["attempt_seq"] = int(state.get("attempt_seq", 0)) + 1
         state["total_attempts"] = int(state.get("total_attempts", 0)) + 1
