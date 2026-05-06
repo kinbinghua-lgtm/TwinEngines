@@ -828,7 +828,6 @@ class LiveRunner:
 
         # 真实盘: 先提交 FOK, 被拒则跳过 (不扣预算, 等下一信号重试)
         if is_real_mode:
-            global _REAL_FOK_SENT
             _REAL_FOK_SENT.add(window_id)  # 防重复下单
             try:
                 active = self.market_resolver.get_active()
