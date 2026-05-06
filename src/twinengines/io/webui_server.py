@@ -241,16 +241,16 @@ def summary_payload(root: Path) -> dict[str, Any]:
 def current_decision_payload(root: Path) -> dict[str, Any]:
     cw = read_json(root / "data_runtime" / "current_window.json") or {}; sm = summary_payload(root); wid = str(cw.get("window_id") or "")
     T = safe_float(cw.get("T") or cw.get("T_remaining") or cw.get("t_remaining_sec")); best_dir = str(cw.get("best_dir") or "").lower(); td = str(cw.get("td") or cw.get("trigger_direction") or "").lower()
-    dir_label = best_dir.upper() if best_dir else "未确定"; trigger_label = td.upper() if td else "无"; direction_mode = "反转" if best_dir and td and best_dir != td else ("顺势" if best_dir and td else "未确定")
+    trend_dir = td if td in ("up", "down") else ""; rev_dir = "down" if trend_dir == "up" else "up" if trend_dir == "down" else ""
+    dir_label = best_dir.upper() if best_dir else "未确定"; trigger_label = td.upper() if td else "无"; trend_label = trend_dir.upper() if trend_dir else "未确定"; rev_label = rev_dir.upper() if rev_dir else "未确定"; direction_mode = "反转" if best_dir and rev_dir and best_dir == rev_dir else ("顺势" if best_dir and trend_dir and best_dir == trend_dir else "未确定")
     ask_up = safe_float(cw.get("ask_up")); ask_down = safe_float(cw.get("ask_down")); ask = ask_up if best_dir == "up" else ask_down if best_dir == "down" else None
-    ev = safe_float(cw.get("fill_ev") or cw.get("best_ev") or cw.get("ev_rev") or cw.get("ev_trend")); ev_min = 0.05 if (T or 0) > 80 else (0.03 if (T or 0) > 30 else 0.02)
+    ev_trend = safe_float(cw.get("ev_trend")); ev_rev = safe_float(cw.get("ev_rev")); ev = safe_float(cw.get("fill_ev") or cw.get("best_ev") or ev_rev or ev_trend); ev_min = 0.05 if (T or 0) > 80 else (0.03 if (T or 0) > 30 else 0.02)
     real_target = safe_float(cw.get("real_target_quote")); shares = real_target / ask if real_target is not None and ask else None
     bal = sm.get("real_balance_usdc"); cap = float(bal) * 0.15 if bal is not None else None; real_status = str(cw.get("real_status") or "未提交")
     def c(k,l,s,t): return {"key": k, "label": l, "status": s, "text": t}
     real = [
-        c("time","时间是否足够","pass" if T is not None and T >= 5 else "fail", f"还剩 {T:.0f}s；少于 5s 就不再追单，避免临近结算成交风险" if T is not None else "没有剩余时间数据"),
-        c("book","盘口是否能报价","pass" if ask_up and ask_down else "fail", f"UP 当前买价={ask_up}，DOWN 当前买价={ask_down}；本次按 {dir_label} 的价格 {ask} 计算"),
-        c("ev","买这个方向是否有正期望","pass" if ev is not None and ev >= ev_min else "fail", f"准备评估 {dir_label}（{direction_mode}）；当前 EV={ev if ev is not None else '--'}，需要至少 {ev_min:.2f}"),
+        c("book","盘口是否能报价","pass" if ask_up and ask_down else "fail", f"UP 当前买价={ask_up}，DOWN 当前买价={ask_down}；当前选中 {dir_label}，按价格 {ask} 计算"),
+        c("ev","选中方向是否有正期望","pass" if ev is not None and ev >= ev_min else "fail", f"顺势候选={trend_label}，EV={ev_trend if ev_trend is not None else '--'}；反转候选={rev_label}，EV={ev_rev if ev_rev is not None else '--'}；当前选中 {dir_label}（{direction_mode}），需要至少 {ev_min:.2f}"),
         c("reversal_d","反转幅度是否安全","pass" if cw.get("r_d_ok") is True else "fail" if cw.get("r_d_ok") is False else "unknown", f"如果这是反转单，价格偏离 d_abs={cw.get('d_abs','--')} 不能超过 {cw.get('d_cliff','--')}；太大说明可能已经跑过头"),
         c("reversal_p","反转概率是否够高","pass" if cw.get("r_p_ok") is True else "fail" if cw.get("r_p_ok") is False else "unknown", f"如果这是反转单，反转概率 p_rev={cw.get('p_lower') or cw.get('p_rev') or '--'} 需要达到 {cw.get('p_min_r','--')}"),
         c("kelly","真实账户建议下注额是否够最小单","pass" if real_target is not None and real_target >= 2.5 else "fail" if "Kelly<2.5" in real_status else "unknown", f"按真实余额和胜率算，{dir_label} 建议下注={real_target if real_target is not None else '--'}；低于 $2.50 不下"),
@@ -259,10 +259,13 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
         c("submit","是否已经进入真实 FOK 下单流程","pass" if real_status == "real_fok_evaluated" else "warn", f"当前真实盘状态：{real_status}；只有前面条件都过才会提交 FOK"),
     ]
     fail = next((x for x in real if x["status"] == "fail"), None)
-    reason = "已提交/评估 FOK，等待订单审计确认" if real_status == "real_fok_evaluated" else ("未提交：Kelly<2.5，账户余额或 cap 不足" if "Kelly<2.5" in real_status else (f"未提交：{fail['label']}未满足" if fail else f"未提交：{real_status}"))
+    if real_status == "real_fok_evaluated": reason = "已进入真实 FOK 下单评估，等待订单审计确认"
+    elif T is not None and T < 5: reason = "未提交：当前窗口剩余时间少于 5 秒"
+    elif "Kelly<2.5" in real_status: reason = "未提交：建议下注金额低于 $2.50，或账户余额/cap 不足"
+    else: reason = f"未提交：{fail['label']}未通过" if fail else f"未提交：{real_status}"
     fill = safe_float(cw.get("fill_amt") or cw.get("fill_amount")); shadow_status = str(cw.get("status") or "等待")
     shadow = [c("time","时间条件","pass" if T is not None and T >= 5 else "fail", f"T={T:.0f}s >= 5s" if T is not None else "无数据"), c("ev","EV 条件","pass" if ev is not None and ev >= ev_min else "fail", f"EV={ev if ev is not None else '--'}，阈值={ev_min:.2f}"), c("kelly","模拟 Kelly 条件","pass" if fill and fill >= 2.5 else "warn", f"影子 fill={fill if fill is not None else '--'}")]
-    return {"ok": True, "window_id": wid, "window_label": window_label(wid), "seq": item_seq(cw), "prefix": item_seq(cw), "T_remaining": T, "td": td, "trigger_direction": td, "trigger_direction_label": trigger_label, "best_dir": best_dir, "best_dir_label": dir_label, "decision_mode": direction_mode, "evaluated_direction": best_dir, "evaluated_direction_label": dir_label, "evaluated_ask": ask, "ask_up": ask_up, "ask_down": ask_down, "best_ev": ev, "real": {"status": real_status, "reason": reason, "target_quote": real_target, "target_shares": shares, "conditions": real}, "shadow": {"status": shadow_status, "reason": str(cw.get("reason") or shadow_status), "fill_amount": fill, "ev": ev, "equity": sm.get("shadow_equity_usdc"), "conditions": shadow}, "source": "current_window.json + derived"}
+    return {"ok": True, "window_id": wid, "window_label": window_label(wid), "seq": item_seq(cw), "prefix": item_seq(cw), "T_remaining": T, "server_ts_ms": int(time.time() * 1000), "td": td, "trigger_direction": td, "trigger_direction_label": trigger_label, "trend_direction": trend_dir, "trend_direction_label": trend_label, "reversal_direction": rev_dir, "reversal_direction_label": rev_label, "ev_trend": ev_trend, "ev_rev": ev_rev, "best_dir": best_dir, "best_dir_label": dir_label, "decision_mode": direction_mode, "evaluated_direction": best_dir, "evaluated_direction_label": dir_label, "evaluated_ask": ask, "ask_up": ask_up, "ask_down": ask_down, "best_ev": ev, "real": {"status": real_status, "reason": reason, "target_quote": real_target, "target_shares": shares, "conditions": real}, "shadow": {"status": shadow_status, "reason": str(cw.get("reason") or shadow_status), "fill_amount": fill, "ev": ev, "equity": sm.get("shadow_equity_usdc"), "conditions": shadow}, "source": "current_window.json + derived"}
 
 
 def create_app(*, root: Path, password: Optional[str] = None) -> Flask:
