@@ -1282,6 +1282,16 @@ class LiveRunner:
             cid = str(it.get("condition_id") or "")
             if not cid:
                 continue
+            # 检查市场是否已结算 (UMA 已确认)
+            try:
+                import urllib.request, json as _j2
+                url = f"https://clob.polymarket.com/markets/{cid}"
+                req = urllib.request.Request(url, headers={"User-Agent": "TE/1.0"})
+                mkt = _j2.loads(urllib.request.urlopen(req, timeout=5).read())
+                if not mkt.get("resolved"):
+                    continue  # UMA 未确认, 跳过
+            except Exception:
+                continue
             has_pos = self._has_redeemable_position(condition_id=cid)
             if not has_pos:
                 with self._redeem_lock:
