@@ -832,20 +832,18 @@ class LiveRunner:
         elif single < 2.50:
             single = 2.50       # 预算够但深度薄, 保底 $2.50
 
-        # 真实盘: FOK 下单 (带防护)
+        # 真实盘: FOK 下单 (每窗口只发一次, 不重试)
         if is_real_mode:
             # 防反向: 已有持仓但方向相反 → 锁仓
             if window_id in _REAL_WIN_DIR and best_dir != _REAL_WIN_DIR[window_id]:
                 _REAL_FILLED.add(window_id)
-                self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0,
-                                       "rejected", f"real_reverse:{best_dir}vs{_REAL_WIN_DIR[window_id]}", d_abs)
                 return
-            # 防重复: 本窗已成交 → 跳过
+            # 已发过单 → 跳过 (防重复)
             if window_id in _REAL_FILLED:
                 return
-            # 记录首次方向
-            if window_id not in _REAL_WIN_DIR:
-                _REAL_WIN_DIR[window_id] = best_dir
+            # 记录方向 + 标记已发送
+            _REAL_WIN_DIR[window_id] = best_dir
+            _REAL_FILLED.add(window_id)
 
             try:
                 active = self.market_resolver.get_active()
@@ -853,25 +851,12 @@ class LiveRunner:
                     token_id = active.token_id_yes if best_dir == "up" else active.token_id_no
                     side_label = "TREND" if not is_reversal else "REVERSAL"
                     limit_px = ask * 1.005 if ask > 0 else ask
-                    # 下单前查余额
-                    bal_before = self.poly_client.fetch_account_equity_usdc()
-                    ticket = self.submit_signal_order(
+                    self.submit_signal_order(
                         window_id=window_id, side=side_label, direction=best_dir,
                         size_quote_usdc=single, limit_price=round(limit_px, 4),
                         note=f"ev={best_ev:.3f} kelly={kelly_total:.2f}")
-                    # 下单后查余额, 对比判断是否成交
-                    import time as _tm
-                    _tm.sleep(0.5)
-                    bal_after = self.poly_client.fetch_account_equity_usdc()
-                    if bal_before is not None and bal_after is not None and (bal_before - bal_after) > single * 0.3:
-                        _REAL_FILLED.add(window_id)  # 余额减少了 → 成交
-                    else:
-                        self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0,
-                                               "rejected", "FOK_rejected", d_abs)
-                        return
             except Exception as e:
                 logger.warning("real order submit failed: %s", e)
-                return
 
         # 扣减预算 (影子盘直接扣; 真实盘通过 FOK 检查才到这里)
         win_budget[window_id] = remaining - single
