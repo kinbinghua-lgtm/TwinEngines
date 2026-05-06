@@ -853,19 +853,18 @@ class LiveRunner:
                     token_id = active.token_id_yes if best_dir == "up" else active.token_id_no
                     side_label = "TREND" if not is_reversal else "REVERSAL"
                     limit_px = ask * 1.005 if ask > 0 else ask
+                    # 下单前查余额
+                    bal_before = self.poly_client.fetch_account_equity_usdc()
                     ticket = self.submit_signal_order(
                         window_id=window_id, side=side_label, direction=best_dir,
                         size_quote_usdc=single, limit_price=round(limit_px, 4),
                         note=f"ev={best_ev:.3f} kelly={kelly_total:.2f}")
-                    # 验证成交: 查 Polymarket 余额是否减少 (权威方法)
+                    # 下单后查余额, 对比判断是否成交
                     import time as _tm
-                    _tm.sleep(0.5)  # 等链上确认
-                    new_bal = self.poly_client.fetch_account_equity_usdc()
-                    old_bal = self._last_real_balance if hasattr(self, '_last_real_balance') else new_bal
-                    self._last_real_balance = new_bal
-                    # 余额减少约 single 金额 = 成交了
-                    if old_bal is not None and new_bal is not None and (old_bal - new_bal) > single * 0.5:
-                        _REAL_FILLED.add(window_id)  # 成交 → 本窗不再下单
+                    _tm.sleep(0.5)
+                    bal_after = self.poly_client.fetch_account_equity_usdc()
+                    if bal_before is not None and bal_after is not None and (bal_before - bal_after) > single * 0.3:
+                        _REAL_FILLED.add(window_id)  # 余额减少了 → 成交
                     else:
                         self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0,
                                                "rejected", "FOK_rejected", d_abs)
