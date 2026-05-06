@@ -52,6 +52,7 @@ from .health import set_halted, set_metrics_provider, start_health_server
 from .logging_setup import get_logger, setup_logging
 from .market_resolver import ActiveMarket, MarketResolver, MarketResolverCfg
 from .polymarket_client import OrderState, OrderTicket, PolymarketClient
+from .position_exit_guard import PositionExitGuard
 from .polymarket_feed import PolymarketFeed, PolymarketFeedCfg
 from .position_lock import PositionLock
 from .reconciliation import LocalPosition, Reconciler, ReconcilerCfg
@@ -102,6 +103,7 @@ class LiveRunner:
     store: Optional[StateStore] = None
     instance_lock: Optional[SingleInstanceLock] = None
     shadow_engine: Optional[ShadowSignalEngine] = None
+    exit_guard: Optional[PositionExitGuard] = None
     _sim_equity: float = 20.0  # 影子模拟资金 (随盈亏动态变化)
     _win_fills: dict[str, dict] = field(default_factory=dict)  # 每窗口仓位跟踪: {wid: {dir, filled, target, equity}}
 
@@ -257,6 +259,11 @@ class LiveRunner:
                 # Web「当前资金」读 kv account.last_equity_usdc；启动即写入避免等首轮 reconcile
                 self.store.put(KEY_LAST_EQUITY, equity)
             self._reconcile_window_order_flags_from_exchange()
+            self.exit_guard = PositionExitGuard(
+                client=self.poly_client,
+                store=self.store,
+                alert=(self.alerting.alert if self.alerting else None),
+            )
         else:
             logger.warning("Real orders disabled (%s); running in shadow/dry-run mode", reason)
 
@@ -369,6 +376,8 @@ class LiveRunner:
             while not self._stopping.is_set():
                 time.sleep(1.0)
                 if self.poly_client and self.cfg.runtime.enable_real_orders:
+                    if self.exit_guard is not None:
+                        self.exit_guard.check_once()
                     self._write_real_balance()
         finally:
             self.stop()
@@ -1537,6 +1546,8 @@ class LiveRunner:
                 out["position_lock"] = self.position_lock.snapshot()
             if self.reconciler is not None:
                 out["reconciler"] = self.reconciler.snapshot()
+            if self.exit_guard is not None:
+                out["exit_guard"] = self.exit_guard.snapshot()
             if self.poly_client is not None:
                 out["polymarket"] = self.poly_client.snapshot()
             if self.shadow_engine is not None:
@@ -1738,6 +1749,17 @@ class LiveRunner:
                         "size": ticket.size_quote_usdc,
                         "price": ticket.price,
                     })
+                if self.exit_guard is not None and active is not None:
+                    self.exit_guard.register_entry(
+                        window_id=window_id,
+                        direction=direction,
+                        token_id=token_id,
+                        entry_price=float(ticket.price),
+                        entry_cost_usdc=float(ticket.size_quote_usdc),
+                        entry_shares=float(ticket.filled_size_shares or ticket.size_shares or comp_size_shares),
+                        market_end_ts_ms=int(active.end_ts_ms),
+                        client_order_id=client_order_id,
+                    )
                 if self.position_lock is not None:
                     self.position_lock.release(window_id, reason="sync_filled")
             elif ticket.state == OrderState.DRY_RUN_SHADOW:
