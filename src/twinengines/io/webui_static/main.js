@@ -3,39 +3,36 @@ const money=v=>v==null?'--':'$'+Number(v).toFixed(2);
 const num=(v,d=2)=>v==null?'--':Number(v).toFixed(d);
 const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 const ts=ms=>ms?new Date(Number(ms)).toLocaleString('zh-CN',{hour12:false}):'--';
-async function api(p){return await (await fetch(p,{cache:'no-store'})).json()}
-function pnl(v){return Number(v||0)>=0?'ok':'bad'}
-function rows(id,a,f){$(id).innerHTML=a.length?a.map(f).join(''):'<tr><td colspan="9" class="muted">暂无数据</td></tr>'}
-async function loadAll(){
-  try{
-    let [sum,cw,ro,rr,so,sr,lg,ver,st]=await Promise.all([
-      api('/api/summary'),api('/api/current_window'),api('/api/real/orders?n=50'),api('/api/real/results?n=50'),api('/api/shadow/orders?n=50'),api('/api/shadow/results?n=50'),api('/api/logs?n=160'),api('/api/version'),api('/api/strategy/status')
-    ]);
-    $('health').textContent='正常 '+new Date().toLocaleTimeString('zh-CN',{hour12:false}); $('health').className='pill ok';
-    $('strategy-running').textContent=st.running?'运行中':'已暂停'; $('strategy-running').className=st.running?'ok':'bad'; $('strategy-pid').textContent=st.pid||'--'; $('strategy-cmd').textContent=st.command||'--'; $('btn-start').disabled=!!st.running; $('btn-stop').disabled=!st.running;
-    $('m-real').textContent=money(sum.real_balance_usdc); $('m-shadow').textContent=money(sum.shadow_equity_usdc); $('m-window').textContent=cw.window_label||cw.window_id||'--'; $('m-ver').textContent=(ver.deployed||'unknown').slice(0,12);
-    $('r-bal').textContent=money(sum.real_balance_usdc); $('r-pend').textContent=money(sum.real_pending_redeem_usdc); $('s-eq').textContent=money(sum.shadow_equity_usdc);
-    $('r-fill').textContent=ro.items.filter(x=>x.kind==='order_filled').length; $('r-fail').textContent=ro.items.filter(x=>x.kind==='order_failed').length; $('s-on').textContent=so.items.length; $('s-rn').textContent=sr.items.length;
-    let judged=sr.items.filter(x=>x.won===true||x.won===false), wins=judged.filter(x=>x.won).length; $('s-wr').textContent=judged.length?`${wins}/${judged.length} (${(wins/judged.length*100).toFixed(0)}%)`:'--';
-    $('current').innerHTML=`<div class="row"><span>窗口</span><b>${esc(cw.window_label||cw.window_id||'--')}</b></div><div class="row"><span>序列</span><b class="mono">${esc(cw.prefix||'--')}</b></div><div class="row"><span>剩余</span><b>${cw.T==null?'--':Math.round(cw.T)+'s'}</b></div><div class="row"><span>方向</span><b>${esc((cw.best_dir||'--').toUpperCase())}</b></div><div class="row"><span>状态</span><b>${esc(cw.status||'等待')}</b></div><div class="row"><span>价格/EV</span><span>up ${num(cw.ask_up,3)} / dn ${num(cw.ask_down,3)} / rev ${num(cw.ev_rev,4)} / trend ${num(cw.ev_trend,4)}</span></div>`;
-    rows('real-orders',ro.items,x=>`<tr><td>${ts(x.ts_ms)}</td><td>${esc(x.kind)}</td><td>${esc((x.direction||x.side||'').toUpperCase())}</td><td>${money(x.size_usdc)}</td><td>${num(x.price,4)}</td><td>${esc(x.error||x.last_error||x.status||'')}</td><td class="mono">${esc((x.client_order_id||x.exchange_order_id||'').slice(-26))}</td></tr>`);
-    rows('real-results',rr.items,x=>`<tr><td class="mono">${esc(x.window_id)}</td><td>${esc((x.dir||'').toUpperCase())}</td><td>${money(x.fill_amt)}</td><td class="${pnl(x.pnl)}">${num(x.pnl,2)}</td><td>${money(x.equity)}</td></tr>`);
-    rows('shadow-orders',so.items,x=>`<tr><td class="mono">${esc(x.window_id)}</td><td class="mono">${esc(x.trigger_pattern||x.seq||'')}</td><td>${esc((x.best_dir||x.dir||'').toUpperCase())}</td><td>${money(x.fill_amount||x.fill_amt)}</td><td>${num(x.best_ev,4)}</td><td>${esc(x.status||'')}</td><td>${esc(x.reason||'')}</td></tr>`);
-    rows('shadow-results',sr.items,x=>`<tr><td class="mono">${esc(x.window_id)}</td><td class="mono">${esc(x.seq||'')}</td><td>${esc((x.dir||'').toUpperCase())}</td><td>${money(x.fill_amt)}</td><td class="${pnl(x.pnl)}">${num(x.pnl,2)}</td><td>${money(x.equity)}</td></tr>`);
-    $('logbox').textContent=(lg.items||[]).map(x=>x.text||x).join('\n')||'暂无日志';
-  }catch(e){$('health').textContent='异常 '+e; $('health').className='pill bad'}
+const pct=v=>v==null?'--':(Number(v)*100).toFixed(1)+'%';
+async function api(p,opt){const r=await fetch(p,{cache:'no-store',...(opt||{})});return await r.json()}
+function qs(box){return [...document.querySelectorAll(`#${box} [name]`)].map(i=>`${encodeURIComponent(i.name)}=${encodeURIComponent(i.value||'')}`).join('&')}
+function clsPnl(v){return Number(v||0)>=0?'ok':'bad'}
+function wonText(v){return v===true?'<span class="ok">赢</span>':v===false?'<span class="bad">输</span>':'<span class="unknown">--</span>'}
+function rows(id,a,f,col=9){$(id).innerHTML=a&&a.length?a.map(f).join(''):`<tr><td colspan="${col}" class="muted">暂无数据</td></tr>`}
+function stat(prefix,s){$(`${prefix}-count`).textContent=s.count??0;$(`${prefix}-wr`).textContent=pct(s.win_rate);$(`${prefix}-pnl`).textContent=money(s.total_pnl);$(`${prefix}-avgpnl`).textContent=money(s.avg_pnl);$(`${prefix}-avgamt`).textContent=money(s.avg_amount)}
+function conds(id,a){$(id).innerHTML=(a||[]).map(x=>`<div class="cond"><b>${esc(x.label)}</b><span class="${esc(x.status)}">${esc(x.status)}</span><span>${esc(x.text)}</span></div>`).join('')||'<div class="muted">暂无条件数据</div>'}
+async function loadLive(){
+  const [sum,cw,dec,ver,st]=await Promise.all([api('/api/summary'),api('/api/current_window'),api('/api/current_decision'),api('/api/version'),api('/api/strategy/status')]);
+  $('health').textContent='正常 '+new Date().toLocaleTimeString('zh-CN',{hour12:false});$('health').className='pill ok';
+  $('st-run').textContent=st.running?'运行中':'已暂停';$('st-run').className=st.running?'ok':'bad';$('st-pid').textContent='PID '+(st.pid||'--');$('strategy-cmd').textContent=st.command||'--';$('btn-start').disabled=!!st.running;$('btn-stop').disabled=!st.running;
+  $('m-real').textContent=money(sum.real_balance_usdc);$('m-shadow').textContent=money(sum.shadow_equity_usdc);$('m-window').textContent=dec.window_label||cw.window_label||'--';$('m-wid').textContent=dec.window_id||cw.window_id||'--';$('m-time').textContent=dec.T_remaining==null?'--':Math.round(dec.T_remaining)+'s';$('m-ver').textContent=String(ver.deployed||'unknown').slice(0,12);
+  $('real-reason').textContent=dec.real?.reason||'--';conds('real-conds',dec.real?.conditions||[]);
+  $('shadow-status').textContent=dec.shadow?.status||'--';$('shadow-fill').textContent=money(dec.shadow?.fill_amount);$('shadow-ev').textContent=num(dec.shadow?.ev,4);$('shadow-eq').textContent=money(dec.shadow?.equity);conds('shadow-conds',dec.shadow?.conditions||[]);
 }
-
-async function controlStrategy(action){
-  const start=$('btn-start'), stop=$('btn-stop'), msg=$('strategy-msg');
-  start.disabled=true; stop.disabled=true; msg.textContent=(action==='start'?'正在启动...':'正在暂停...');
-  try{
-    const r=await fetch('/api/strategy/'+action,{method:'POST',cache:'no-store'});
-    const j=await r.json();
-    msg.textContent=j.ok?(action==='start'?'启动请求已执行':'暂停请求已执行'):('失败 '+(j.error||''));
-    await loadAll();
-  }catch(e){ msg.textContent='操作失败 '+e; }
+async function controlStrategy(action){const msg=$('strategy-msg');$('btn-start').disabled=true;$('btn-stop').disabled=true;msg.textContent=action==='start'?'正在启动...':'正在暂停...';try{const j=await api('/api/strategy/'+action,{method:'POST'});msg.textContent=j.ok?(action==='start'?'已启动/启动请求完成':'已暂停/暂停请求完成'):'失败：'+(j.error||j.reason||'unknown');await loadLive()}catch(e){msg.textContent='失败：'+e}}
+async function loadReal(){
+  const [r,o]=await Promise.all([api('/api/real/results?limit=20&'+qs('real-filters')),api('/api/real/orders?limit=20&'+qs('real-filters'))]);const s=r.stats||{};stat('real',s);$('real-bal').textContent=money(s.real_balance_usdc);
+  rows('real-results',r.items,x=>`<tr><td><div>${ts(x.ts_ms)}</div><div class="mono muted">${esc(x.window_id)}</div></td><td class="mono">${esc(x.seq||'')}</td><td>${esc((x.direction||x.dir||'').toUpperCase())}</td><td class="right">${money(x.amount||x.fill_amt)}</td><td class="right ${clsPnl(x.pnl)}">${money(x.pnl)}</td><td>${wonText(x.won)}</td><td class="right">${money(x.real_balance_usdc||x.balance_usdc||x.equity)}</td></tr>`,7);
+  rows('real-orders',o.items,x=>`<tr><td>${ts(x.ts_ms)}</td><td>${esc(x.kind)}</td><td class="mono">${esc(x.window_id||'')}</td><td>${esc((x.direction||x.side||'').toUpperCase())}</td><td>${money(x.size_usdc||x.amount)}</td><td>${esc(x.error||x.last_error||x.state||x.status||'')}</td><td class="mono">${esc(String(x.client_order_id||x.exchange_order_id||'').slice(-28))}</td></tr>`,7);
 }
-
-document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.sec').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.t).classList.add('active')});
-loadAll(); setInterval(loadAll,5000);
+async function loadShadow(){
+  const [r,o]=await Promise.all([api('/api/shadow/results?limit=20&'+qs('shadow-filters')),api('/api/shadow/orders?limit=20&'+qs('shadow-filters'))]);const s=r.stats||{};$('shadow-count').textContent=s.count??0;$('shadow-wr2').textContent=pct(s.win_rate);$('shadow-pnl').textContent=money(s.total_pnl);$('shadow-avgpnl').textContent=money(s.avg_pnl);$('shadow-avgamt').textContent=money(s.avg_amount);$('shadow-bal').textContent=money(s.shadow_equity_usdc);
+  rows('shadow-results',r.items,x=>`<tr><td><div>${ts(x.ts_ms)}</div><div class="mono muted">${esc(x.window_id)}</div></td><td class="mono">${esc(x.seq||'')}</td><td>${esc((x.direction||x.dir||'').toUpperCase())}</td><td class="right">${money(x.amount||x.fill_amt)}</td><td class="right ${clsPnl(x.pnl)}">${money(x.pnl)}</td><td>${wonText(x.won)}</td><td class="right sim">${money(x.equity)}</td></tr>`,7);
+  rows('shadow-orders',o.items,x=>`<tr><td><div>${ts(x.ts_ms)}</div><div class="mono muted">${esc(x.window_id)}</div></td><td class="mono">${esc(x.seq||x.trigger_pattern||'')}</td><td>${esc((x.direction||x.best_dir||x.dir||'').toUpperCase())}</td><td>${money(x.amount||x.fill_amount||x.fill_amt)}</td><td>${num(x.best_ev,4)}</td><td>${esc(x.status||'')}</td><td>${esc(x.reason||'')}</td></tr>`,7);
+}
+async function loadLogs(){const q=encodeURIComponent($('log-q')?.value||''),level=encodeURIComponent($('log-level')?.value||'all');const lg=await api(`/api/logs?n=220&q=${q}&level=${level}`);$('logbox').textContent=(lg.items||[]).map(x=>`[${x.source}] ${x.text}`).join('\n')||'暂无日志'}
+async function loadAll(){try{await Promise.all([loadLive(),loadReal(),loadShadow(),loadLogs()])}catch(e){$('health').textContent='异常 '+e;$('health').className='pill bad'}}
+function pageFromPath(){const p=location.pathname.replace('/','')||'live';return ['real','shadow','logs'].includes(p)?p:'live'}
+function setPage(p){document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.page===p));document.querySelectorAll('.sec').forEach(s=>s.classList.toggle('active',s.id===p));history.replaceState(null,'',p==='live'?'/':'/'+p)}
+document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>setPage(b.dataset.page));
+setPage(pageFromPath());loadAll();setInterval(loadLive,5000);
