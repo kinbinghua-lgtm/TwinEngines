@@ -248,15 +248,15 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     bal = sm.get("real_balance_usdc"); cap = float(bal) * 0.15 if bal is not None else None; real_status = str(cw.get("real_status") or "未提交")
     def c(k,l,s,t): return {"key": k, "label": l, "status": s, "text": t}
     real = [
-        c("time","是否还来得及下单","pass" if T is not None and T >= 5 else "fail", f"当前窗口剩余 {T:.0f}s，需要至少 5s" if T is not None else "没有剩余时间数据"),
-        c("book","UP/DOWN 盘口价格是否可用","pass" if ask_up and ask_down else "fail", f"UP 买一价={ask_up}，DOWN 买一价={ask_down}；本次评估 {dir_label} 使用价格={ask}"),
-        c("ev","本方向期望收益是否够高","pass" if ev is not None and ev >= ev_min else "fail", f"评估方向={dir_label}（{direction_mode}），EV={ev if ev is not None else '--'}，最低要求={ev_min:.2f}"),
-        c("reversal_d","反转信号幅度是否不过热","pass" if cw.get("r_d_ok") is True else "fail" if cw.get("r_d_ok") is False else "unknown", f"仅反转方向重点看：d_abs={cw.get('d_abs','--')}，允许上限={cw.get('d_cliff','--')}"),
-        c("reversal_p","反转概率是否足够","pass" if cw.get("r_p_ok") is True else "fail" if cw.get("r_p_ok") is False else "unknown", f"仅反转方向重点看：p_rev={cw.get('p_lower') or cw.get('p_rev') or '--'}，最低要求={cw.get('p_min_r','--')}"),
-        c("kelly","按真实余额算出的下注金额是否达标","pass" if real_target is not None and real_target >= 2.5 else "fail" if "Kelly<2.5" in real_status else "unknown", f"评估 {dir_label}，目标金额={real_target if real_target is not None else '--'}，最低=$2.50"),
-        c("cap","真实账户单窗口资金上限是否够用","pass" if cap is not None and cap >= 2.5 else "fail" if cap is not None else "unknown", f"真实余额×15%={cap:.2f}，需要至少 $2.50" if cap is not None else "真实余额不可用"),
-        c("min_shares","目标金额能否买到至少 5 shares","pass" if shares is not None and shares >= 5 else "fail" if shares is not None else "unknown", f"评估 {dir_label}，目标 shares={shares:.2f}" if shares is not None else "尚无目标金额/本方向价格"),
-        c("submit","实盘 FOK 是否已提交/评估","pass" if real_status == "real_fok_evaluated" else "warn", f"评估方向={dir_label}，状态={real_status}"),
+        c("time","时间是否足够","pass" if T is not None and T >= 5 else "fail", f"还剩 {T:.0f}s；少于 5s 就不再追单，避免临近结算成交风险" if T is not None else "没有剩余时间数据"),
+        c("book","盘口是否能报价","pass" if ask_up and ask_down else "fail", f"UP 当前买价={ask_up}，DOWN 当前买价={ask_down}；本次按 {dir_label} 的价格 {ask} 计算"),
+        c("ev","买这个方向是否有正期望","pass" if ev is not None and ev >= ev_min else "fail", f"准备评估 {dir_label}（{direction_mode}）；当前 EV={ev if ev is not None else '--'}，需要至少 {ev_min:.2f}"),
+        c("reversal_d","反转幅度是否安全","pass" if cw.get("r_d_ok") is True else "fail" if cw.get("r_d_ok") is False else "unknown", f"如果这是反转单，价格偏离 d_abs={cw.get('d_abs','--')} 不能超过 {cw.get('d_cliff','--')}；太大说明可能已经跑过头"),
+        c("reversal_p","反转概率是否够高","pass" if cw.get("r_p_ok") is True else "fail" if cw.get("r_p_ok") is False else "unknown", f"如果这是反转单，反转概率 p_rev={cw.get('p_lower') or cw.get('p_rev') or '--'} 需要达到 {cw.get('p_min_r','--')}"),
+        c("kelly","真实账户建议下注额是否够最小单","pass" if real_target is not None and real_target >= 2.5 else "fail" if "Kelly<2.5" in real_status else "unknown", f"按真实余额和胜率算，{dir_label} 建议下注={real_target if real_target is not None else '--'}；低于 $2.50 不下"),
+        c("cap","账户资金上限是否允许下单","pass" if cap is not None and cap >= 2.5 else "fail" if cap is not None else "unknown", f"单窗口最多用真实余额的 15%，当前上限={cap:.2f}，至少要覆盖 $2.50" if cap is not None else "真实余额不可用"),
+        c("min_shares","是否满足 Polymarket 最少 5 shares","pass" if shares is not None and shares >= 5 else "fail" if shares is not None else "unknown", f"按 {dir_label} 当前价格估算可买 shares={shares:.2f}；少于 5 shares 不提交" if shares is not None else "还没有目标金额或本方向价格"),
+        c("submit","是否已经进入真实 FOK 下单流程","pass" if real_status == "real_fok_evaluated" else "warn", f"当前真实盘状态：{real_status}；只有前面条件都过才会提交 FOK"),
     ]
     fail = next((x for x in real if x["status"] == "fail"), None)
     reason = "已提交/评估 FOK，等待订单审计确认" if real_status == "real_fok_evaluated" else ("未提交：Kelly<2.5，账户余额或 cap 不足" if "Kelly<2.5" in real_status else (f"未提交：{fail['label']}未满足" if fail else f"未提交：{real_status}"))
