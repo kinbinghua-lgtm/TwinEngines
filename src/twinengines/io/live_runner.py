@@ -841,8 +841,8 @@ class LiveRunner:
                         window_id=window_id, side=side_label, direction=best_dir,
                         size_quote_usdc=single, limit_price=round(limit_px, 4),
                         note=f"ev={best_ev:.3f} kelly={kelly_total:.2f}")
-                    # 查 Polymarket 确认成交 (不依赖本地 ticket.filled_size_shares)
-                    oid = getattr(ticket, 'exchange_order_id', None) or getattr(ticket, 'client_order_id', None)
+                    # 查 Polymarket 确认成交 (使用 exchange_order_id)
+                    oid = getattr(ticket, 'exchange_order_id', None)
                     filled_ok = False
                     if oid and hasattr(self.poly_client, '_real_client'):
                         try:
@@ -853,6 +853,11 @@ class LiveRunner:
                                 filled_ok = True
                         except Exception:
                             pass
+                    # Fallback: 如果 exchange_order_id 为空或被拒, 用 filled_size_shares
+                    if not filled_ok:
+                        fs = float(getattr(ticket, 'filled_size_shares', 0) or 0)
+                        if fs > 1e-9:
+                            filled_ok = True
                     if not filled_ok:
                         # 链上也查不到 = 真没成交 → 等下一秒再试
                         self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0,
