@@ -274,6 +274,82 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     shadow = [c("time","时间条件","pass" if T is not None and T >= 5 else "fail", f"T={T:.0f}s >= 5s" if T is not None else "无数据"), c("ev","EV 条件","pass" if ev is not None and ev >= ev_min else "fail", f"EV={ev if ev is not None else '--'}，阈值={ev_min:.2f}"), c("kelly","模拟 Kelly 条件","pass" if fill and fill >= 2.5 else "warn", f"影子 fill={fill if fill is not None else '--'}")]
     return {"ok": True, "window_id": wid, "window_label": window_label(wid), "seq": seq, "seq_display": seq_display, "seq_total": seq_total, "prefix": seq, "T_remaining": T, "server_ts_ms": int(time.time() * 1000), "td": td, "trigger_direction": td, "trigger_direction_label": trigger_label, "trend_direction": trend_dir, "trend_direction_label": trend_label, "reversal_direction": rev_dir, "reversal_direction_label": rev_label, "ev_trend": ev_trend, "ev_rev": ev_rev, "best_dir": best_dir, "best_dir_label": dir_label, "decision_mode": direction_mode, "evaluated_direction": best_dir, "evaluated_direction_label": dir_label, "evaluated_ask": ask, "ask_up": ask_up, "ask_down": ask_down, "best_ev": ev, "real": {"status": real_status, "reason": reason, "target_quote": real_target, "target_shares": shares, "limit_price": real_limit_price, "vwap": real_vwap, "safe_executable_quote": real_safe_quote, "filled_order": filled, "conditions": real}, "shadow": {"status": shadow_status, "reason": str(cw.get("reason") or shadow_status), "fill_amount": fill, "ev": ev, "equity": sm.get("shadow_equity_usdc"), "conditions": shadow}, "source": "current_window.json + derived"}
 
+def _shadow_price(order: dict[str, Any]) -> Optional[float]:
+    direction = item_dir(order) or str(order.get("best_dir") or "").lower()
+    if direction == "up": return safe_float(order.get("ask_up") or order.get("ask"))
+    if direction == "down": return safe_float(order.get("ask_down") or order.get("ask"))
+    return safe_float(order.get("ask"))
+
+def _price_bucket(price: Optional[float]) -> str:
+    if price is None: return "unknown"
+    bounds = [0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.60, 0.70, 0.80, 0.90, 0.95]
+    if price < bounds[0]: return "<0.05"
+    for lo, hi in zip(bounds, bounds[1:]):
+        if lo <= price < hi: return f"{lo:.2f}-{hi:.2f}"
+    return ">=0.95"
+
+def _t_bucket(t_remaining: Optional[float]) -> str:
+    if t_remaining is None: return "unknown"
+    t = float(t_remaining)
+    if t <= 15: return "<=15s"
+    if t <= 30: return "15-30s"
+    if t <= 60: return "30-60s"
+    if t <= 120: return "60-120s"
+    return ">120s"
+
+def _shadow_mode(order: dict[str, Any]) -> str:
+    direction = str(order.get("best_dir") or item_dir(order) or "").lower()
+    trig = str(order.get("trigger_pattern") or order.get("seq") or "")
+    if direction not in ("up", "down") or not trig: return "unknown"
+    trig_dir = "up" if trig[-1:] == "1" else "down" if trig[-1:] == "0" else ""
+    if not trig_dir: return "unknown"
+    return "trend" if direction == trig_dir else "reversal"
+
+def _group_shadow_orders(orders: list[dict[str, Any]], results: list[dict[str, Any]], key_fn: Any) -> list[dict[str, Any]]:
+    result_by_wid = {str(x.get("window_id") or ""): x for x in results if x.get("window_id")}
+    rows: dict[str, dict[str, Any]] = {}
+    for o in orders:
+        if str(o.get("status") or "").lower() != "filled": continue
+        amount = safe_float(o.get("fill_amount") or o.get("fill_amt"))
+        if amount is None or amount <= 0: continue
+        price = _shadow_price(o)
+        key = str(key_fn(o, price))
+        r = result_by_wid.get(str(o.get("window_id") or ""))
+        pnl = None
+        won = None
+        if r is not None:
+            total_fill = safe_float(r.get("fill_amt") or r.get("amount")) or amount
+            rpnl = item_pnl(r)
+            if rpnl is not None and total_fill > 0:
+                pnl = float(rpnl) * float(amount) / float(total_fill)
+            won = item_won(r)
+        row = rows.setdefault(key, {"key": key, "count": 0, "settled_count": 0, "wins": 0, "amount": 0.0, "pnl": 0.0, "prices": [], "evs": []})
+        row["count"] += 1
+        row["amount"] += float(amount)
+        if price is not None: row["prices"].append(float(price))
+        ev = safe_float(o.get("best_ev"))
+        if ev is not None: row["evs"].append(float(ev))
+        if pnl is not None:
+            row["settled_count"] += 1
+            row["pnl"] += float(pnl)
+            if won is True: row["wins"] += 1
+    out: list[dict[str, Any]] = []
+    for row in rows.values():
+        prices = row.pop("prices", [])
+        evs = row.pop("evs", [])
+        count = int(row["count"])
+        settled = int(row["settled_count"])
+        amt = float(row["amount"])
+        row["win_rate"] = row["wins"] / settled if settled else None
+        row["avg_amount"] = amt / count if count else None
+        row["avg_price"] = sum(prices) / len(prices) if prices else None
+        row["avg_ev"] = sum(evs) / len(evs) if evs else None
+        row["pnl_per_order"] = float(row["pnl"]) / settled if settled else None
+        out.append(row)
+    def sort_key(x: dict[str, Any]) -> tuple[int, str]:
+        return (-int(x.get("count") or 0), str(x.get("key") or ""))
+    return sorted(out, key=sort_key)
+
 def analytics_payload(root: Path) -> dict[str, Any]:
     orders_all = audit_rows(root, (
         "order_filled", "order_failed", "order_compliance_skip",
@@ -329,6 +405,16 @@ def analytics_payload(root: Path) -> dict[str, Any]:
 
     real_stats = calc_stats(real_results, real_balance=summary_payload(root).get("real_balance_usdc"))
     shadow_stats = calc_stats(shadow_recent, shadow_equity=summary_payload(root).get("shadow_equity_usdc"))
+
+    shadow_orders_raw = read_jsonl(root / "logs" / "shadow_orders.jsonl", 8000)
+    for x in shadow_orders_raw:
+        x.setdefault("fill_amount", x.get("fill_amt") or x.get("kelly_stake"))
+    shadow_orders_recent = [x for x in shadow_orders_raw if (item_ts(x) or 0) >= REAL_RESULTS_CUTOFF_TS_MS]
+    shadow_filled_recent = [x for x in shadow_orders_recent if str(x.get("status") or "").lower() == "filled"]
+    price_rows = _group_shadow_orders(shadow_orders_recent, shadow_recent, lambda o, p: _price_bucket(p))
+    mode_price_rows = _group_shadow_orders(shadow_orders_recent, shadow_recent, lambda o, p: f"{_shadow_mode(o)} / {_price_bucket(p)}")
+    time_rows = _group_shadow_orders(shadow_orders_recent, shadow_recent, lambda o, p: _t_bucket(safe_float(o.get("T_remaining") or o.get("t_remaining_sec"))))
+    prefix_rows = _group_shadow_orders(shadow_orders_recent, shadow_recent, lambda o, p: str(o.get("trigger_pattern") or o.get("seq") or "")[:3] or "unknown")
     return {
         "ok": True,
         "orders": {
@@ -357,7 +443,19 @@ def analytics_payload(root: Path) -> dict[str, Any]:
             "by_kind": sorted(by_kind.items(), key=lambda kv: kv[1], reverse=True),
             "recent": exit_events[:30],
         },
-        "source": "state.sqlite + real_results.jsonl + window_results.jsonl",
+        "shadow_buckets": {
+            "filled_count": len(shadow_filled_recent),
+            "by_price": price_rows,
+            "by_mode_price": mode_price_rows,
+            "by_time": time_rows,
+            "by_prefix": prefix_rows,
+        },
+        "core_logic": {
+            "survival": "prefix-specific dynamic lambda0 -> calibrated p_rev_lower",
+            "mapping": "PREFIX_D_CLIFF/PREFIX_P_MIN risk gates in live_runner; artifact prefix_buckets in survival_model",
+            "direction": "compare trend/reversal by VWAP EV; price bucket is observational only here",
+        },
+        "source": "state.sqlite + real_results.jsonl + window_results.jsonl + shadow_orders.jsonl",
         "cutoff_ts_ms": REAL_RESULTS_CUTOFF_TS_MS,
     }
 

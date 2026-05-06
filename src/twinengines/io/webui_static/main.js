@@ -48,6 +48,13 @@ async function loadAnalytics(){
   rows('ana-exit-kinds',eg.by_kind||[],x=>`<tr><td>${esc(x[0])}</td><td class="right">${esc(x[1])}</td></tr>`,2);
   rows('ana-divergence',dv.rows||[],x=>`<tr><td><div>${ts(x.ts_ms)}</div><div class="mono muted">${esc(x.window_id)}</div></td><td>${esc((x.real_dir||'').toUpperCase())}</td><td>${esc((x.shadow_dir||'').toUpperCase())}</td><td class="right ${clsPnl(x.real_pnl)}">${money(x.real_pnl)}</td><td class="right ${clsPnl(x.shadow_pnl)}">${money(x.shadow_pnl)}</td><td class="right ${clsPnl(x.delta_pnl)}">${money(x.delta_pnl)}</td><td>R:${wonText(x.real_won)} S:${wonText(x.shadow_won)}</td></tr>`,7);
   rows('ana-low-entries',lp.items||[],x=>`<tr><td><div>${ts(x.ts_ms)}</div><div class="mono muted">${esc(x.window_id||'')}</div></td><td>${esc((x.direction||x.side||'').toUpperCase())}</td><td class="right">${money(x.size_usdc||x.amount)}</td><td class="right">${num(x.price,4)}</td><td class="mono">${esc(String(x.client_order_id||x.exchange_order_id||'').slice(-32))}</td></tr>`,5);
+  const sb=a.shadow_buckets||{};
+  const bucketRow=x=>`<tr><td>${esc(x.key)}</td><td class="right">${esc(x.count??0)}</td><td class="right">${pct(x.win_rate)}</td><td class="right ${clsPnl(x.pnl)}">${money(x.pnl)}</td><td class="right">${num(x.avg_price,4)}</td><td class="right">${num(x.avg_ev,3)}</td><td class="right">${money(x.avg_amount)}</td></tr>`;
+  const bucketRowShort=x=>`<tr><td>${esc(x.key)}</td><td class="right">${esc(x.count??0)}</td><td class="right">${pct(x.win_rate)}</td><td class="right ${clsPnl(x.pnl)}">${money(x.pnl)}</td><td class="right">${num(x.avg_price,4)}</td><td class="right">${num(x.avg_ev,3)}</td></tr>`;
+  rows('ana-shadow-price',sb.by_price||[],bucketRow,7);
+  rows('ana-shadow-mode-price',sb.by_mode_price||[],bucketRow,7);
+  rows('ana-shadow-time',sb.by_time||[],bucketRowShort,6);
+  rows('ana-shadow-prefix',sb.by_prefix||[],bucketRowShort,6);
 }
 async function loadAll(){try{await Promise.all([loadLive(),loadReal(),loadShadow(),loadAnalytics(),loadLogs()])}catch(e){$('health').textContent='异常 '+e;$('health').className='pill bad'}}
 function pageFromPath(){const p=location.pathname.replace('/','')||'live';return ['real','shadow','analytics','logs'].includes(p)?p:'live'}
