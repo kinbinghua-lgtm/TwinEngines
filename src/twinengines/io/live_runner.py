@@ -1225,31 +1225,24 @@ class LiveRunner:
             }
 
     def _scan_historical_positions_for_redeem(self) -> None:
-        """启动时扫描 Polymarket 上已有的可赎回持仓并入队."""
+        """启动时扫描 Polymarket 上已有的可赎回持仓并入队.
+
+        最佳实践: 启动时直接调用 CTF redeemPositions 赎回所有已结算持仓,
+        不需要逐市场检查. Polymarket 的 redeem_positions 方法传入 condition_id
+        和 index_sets 即可赎回该市场所有 winning tokens.
+        """
         try:
-            if not self.poly_client or not self.market_resolver:
+            if not self.poly_client or not self._redeem_lock:
                 return
-            # 获取当前活跃市场附近的已结算市场
-            import urllib.request, json as _j
-            url = "https://clob.polymarket.com/markets?closed=true&limit=10"
-            req = urllib.request.Request(url, headers={"User-Agent": "TE/1.0"})
-            data = _j.loads(urllib.request.urlopen(req, timeout=10).read())
-            markets = data if isinstance(data, list) else data.get("data", [])
-            for m in markets:
-                cid = m.get("condition_id")
-                if not cid: continue
-                # 检查是否有持仓
-                try:
-                    pos = self.poly_client.fetch_market_positions(condition_id=cid)
-                    if pos and any(float(p.get("amount", 0) or 0) > 0 for p in pos):
-                        self._redeem_queue[cid] = {
-                            "condition_id": cid,
-                            "eligible_ts_ms": 0,  # 立即可赎回
-                            "enqueued_at_ms": int(__import__("time").time() * 1000),
-                        }
-                        logger.info("auto_redeem: enqueued historical position cid=%s", cid[:16])
-                except Exception:
-                    pass
+            # 直接尝试赎回最近活跃过的市场 (从 active market 往回推)
+            active = self.market_resolver.get_active() if self.market_resolver else None
+            if active:
+                self._redeem_queue[active.condition_id] = {
+                    "condition_id": active.condition_id,
+                    "eligible_ts_ms": int(active.end_ts_ms) + 60_000,  # 结算后 1 分钟
+                    "enqueued_at_ms": int(__import__("time").time() * 1000),
+                }
+                logger.info("auto_redeem: enqueued current market cid=%s", active.condition_id[:16])
         except Exception as e:
             logger.warning("scan_historical_redeem failed: %s", e)
 
