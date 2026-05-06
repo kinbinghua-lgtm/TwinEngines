@@ -55,6 +55,13 @@ async function loadAnalytics(){
   rows('ana-shadow-mode-price',sb.by_mode_price||[],bucketRow,7);
   rows('ana-shadow-time',sb.by_time||[],bucketRowShort,6);
   rows('ana-shadow-prefix',sb.by_prefix||[],bucketRowShort,6);
+  const relax=a.relax||{}, rd=relax.depth||{};
+  setText('ana-relax-shadow',relax.shadow_count??0);
+  setText('ana-relax-real-rate',pct(relax.real_fill_rate));setText('ana-relax-real-sub',`${relax.real_filled??0} 成功 / ${relax.real_events??0} 事件，失败 ${relax.real_failed??0}`);
+  setText('ana-relax-depth',money(rd.p50_safe_quote));setText('ana-relax-depth-sub',`样本 ${rd.count??0}，均值 ${money(rd.avg_safe_quote)}，min ${money(rd.min_safe_quote)}，max ${money(rd.max_safe_quote)}`);
+  const relaxRow=x=>`<tr><td>${esc(x.key)}</td><td class="right">${esc(x.count??0)}</td><td class="right">${esc(x.filled??0)}</td><td class="right">${pct(x.cf_win_rate)}</td><td class="right ${clsPnl(x.cf_pnl)}">${money(x.cf_pnl)}</td><td class="right">${num(x.avg_price,4)}</td><td class="right">${num(x.avg_ev,3)}</td></tr>`;
+  rows('ana-relax-tag',relax.by_tag||[],relaxRow,7);
+  rows('ana-relax-price',relax.by_price||[],relaxRow,7);
   const rej=a.rejected||{};
   const rejSummary=x=>`<tr><td>${esc(x.key)}</td><td class="right">${esc(x.raw_count??0)}</td><td class="right">${esc(x.window_count??0)}</td><td class="right">${pct(x.cf_win_rate)}</td><td class="right ${clsPnl(x.cf_pnl)}">${money(x.cf_pnl)}</td><td class="right">${num(x.avg_price,4)}</td><td class="right">${num(x.avg_ev,3)}</td><td class="right">${num(x.avg_d_abs_pct,4)}</td></tr>`;
   const rejShort=x=>`<tr><td>${esc(x.key)}</td><td class="right">${esc(x.raw_count??0)}</td><td class="right">${esc(x.window_count??0)}</td><td class="right">${pct(x.cf_win_rate)}</td><td class="right ${clsPnl(x.cf_pnl)}">${money(x.cf_pnl)}</td><td class="right">${num(x.avg_price,4)}</td></tr>`;

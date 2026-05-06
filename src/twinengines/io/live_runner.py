@@ -786,6 +786,15 @@ class LiveRunner:
             _SIM_CURRENT["status"] = "EV neg"; self._write_current_window_snapshot(); return
 
         is_reversal = (best_dir != event.get("trigger_direction", ""))
+        selected_ask = ask_up if best_dir == "up" else ask_down
+        is_mid_relax = (not is_reversal) and selected_ask is not None and 0.40 <= float(selected_ask) <= 0.79
+        relax_tag = "mid_040_079_trend" if is_mid_relax else ""
+        if is_mid_relax:
+            _SIM_CURRENT["relax_tag"] = relax_tag
+            _SIM_CURRENT["relax_reason"] = "trend_price_0.40_0.79"
+        else:
+            _SIM_CURRENT.pop("relax_tag", None)
+            _SIM_CURRENT.pop("relax_reason", None)
         reject_reason = ""
         if is_reversal:
             if d_abs > d_cliff:
@@ -800,11 +809,20 @@ class LiveRunner:
             return
 
         if best_ev < ev_min:
-            _SIM_CURRENT["status"] = f"EV<{ev_min}"
-            _SIM_CURRENT["best_dir"] = best_dir
-            self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0, "rejected", f"EV<{ev_min}", d_abs)
-            self._write_current_window_snapshot()
-            return
+            if is_mid_relax and best_ev >= 0.02:
+                _SIM_CURRENT["relaxed_ev_gate"] = True
+                _SIM_CURRENT["status"] = f"RELAX_EV<{ev_min}"
+                self._write_sim_record(
+                    window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0,
+                    "relaxed", f"RELAX_EV<{ev_min}", d_abs,
+                    {"relax_tag": relax_tag, "relaxed_gate": "ev_min", "original_ev_min": ev_min, "ask": selected_ask},
+                )
+            else:
+                _SIM_CURRENT["status"] = f"EV<{ev_min}"
+                _SIM_CURRENT["best_dir"] = best_dir
+                self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0, "rejected", f"EV<{ev_min}", d_abs)
+                self._write_current_window_snapshot()
+                return
 
         ask = ask_up if best_dir == "up" else ask_down
         depth_plan = plan_up if best_dir == "up" else plan_dn
@@ -816,6 +834,15 @@ class LiveRunner:
         safe_executable_quote = float(depth_plan.get("safe_quote", 0))
         limit_price_from_depth = float(depth_plan.get("limit_price", ask))
         vwap_from_depth = float(depth_plan.get("vwap", ask))
+        self._record_orderbook_depth_snapshot(
+            window_id=window_id,
+            best_dir=best_dir,
+            ask_up=ask_up,
+            ask_down=ask_down,
+            plan_up=plan_up,
+            plan_dn=plan_dn,
+            tag=relax_tag or "decision",
+        )
         
         # 影子盘仍用旧逻辑 (简化)
         poly = event.get("polymarket") or {}
@@ -871,7 +898,7 @@ class LiveRunner:
                                     token_id=token_id,
                                     target_quote=float(real_single),
                                     limit_price=float(limit_price_from_depth),
-                                    note=f"ev={best_ev:.3f} kelly={real_kelly_total:.2f} vwap={vwap_from_depth:.4f}",
+                                    note=f"ev={best_ev:.3f} kelly={real_kelly_total:.2f} vwap={vwap_from_depth:.4f} relax={relax_tag or 'none'}",
                                 )
                                 _SIM_CURRENT["real_status"] = "real_fok_evaluated"
                                 _SIM_CURRENT["real_target_quote"] = round(float(real_single), 2)
@@ -1037,6 +1064,7 @@ class LiveRunner:
                 "total_attempts": 0,
                 "switch_count": 0,
                 "created_ts_ms": int(time.time() * 1000),
+                "note": note,
             }
             _REAL_WINDOW_ORDERS[window_id] = state
         elif best_dir != state.get("direction"):
@@ -1081,6 +1109,7 @@ class LiveRunner:
                     "previous_direction": old_dir,
                     "created_ts_ms": int(time.time() * 1000),
                     "switched_ts_ms": int(time.time() * 1000),
+                    "note": note,
                 }
                 _REAL_WINDOW_ORDERS[window_id] = state
                 logger.info(
@@ -1112,6 +1141,7 @@ class LiveRunner:
                 "remaining_shares": float(target_shares),
                 "limit_price": float(limit_price),
                 "last_plan_refresh_ts_ms": int(time.time() * 1000),
+                "note": note,
             })
 
         if state.get("locked") or state.get("unknown_outcome") or state.get("attempt_in_flight"):
@@ -1181,7 +1211,7 @@ class LiveRunner:
         self._apply_real_fok_ticket(state, ticket)
         return ticket
 
-    def _write_sim_record(self, wid, trig, p_adj, p_lower, t_rem, au, ad, best_dir, best_ev, fill_amt, status, reason, d_abs=0):
+    def _write_sim_record(self, wid, trig, p_adj, p_lower, t_rem, au, ad, best_dir, best_ev, fill_amt, status, reason, d_abs=0, extra: Optional[dict[str, Any]] = None):
         try:
             import json as _j, os as _o
             _o.makedirs("logs", exist_ok=True)
@@ -1192,6 +1222,8 @@ class LiveRunner:
                    "fill_amount": round(fill_amt,2),
                    "d_abs_pct": round(d_abs,4),
                    "ts_ms": int(__import__("time").time() * 1000)}
+            if extra:
+                rec.update(extra)
             with open("logs/shadow_orders.jsonl", "ab+") as _f:
                 _f.seek(0, 2); pos = _f.tell()
                 if pos > 0:
@@ -1259,6 +1291,27 @@ class LiveRunner:
             "limit_price": max(float(POLYMARKET_PLATFORM.buy_price_floor), actual_max_price if actual_max_price > 0 else max_price),
             "levels_used": levels,
         }
+
+    def _record_orderbook_depth_snapshot(self, *, window_id: str, best_dir: str, ask_up: Optional[float], ask_down: Optional[float], plan_up: Optional[dict], plan_dn: Optional[dict], tag: str = "decision") -> None:
+        try:
+            import json as _j, os as _o
+            active = self.market_resolver.get_active() if self.market_resolver else None
+            rec = {
+                "ts_ms": int(time.time() * 1000),
+                "window_id": window_id,
+                "tag": tag,
+                "best_dir": best_dir,
+                "ask_up": ask_up,
+                "ask_down": ask_down,
+                "up": plan_up or {},
+                "down": plan_dn or {},
+            }
+            if active is not None:
+                rec.update({"condition_id": active.condition_id, "token_id_yes": active.token_id_yes, "token_id_no": active.token_id_no})
+            _o.makedirs("logs", exist_ok=True)
+            self._append_jsonl("logs/orderbook_depth.jsonl", _j.dumps(rec, ensure_ascii=False, default=str))
+        except Exception as e:
+            logger.debug("orderbook depth snapshot failed: %s", e)
 
     def _resolve_best_direction_by_ev(self, event: dict, window_id: str):
         """方向选择：基于多档盘口 VWAP EV，而非买一 EV。
@@ -1740,6 +1793,7 @@ class LiveRunner:
                         "exchange_order_id": ticket.exchange_order_id,
                         "client_order_id": client_order_id,
                         "ref_limit_price": float(limit_price),
+                        "note": note,
                     })
                 if self.alerting is not None:
                     self.alerting.alert("info", "order_filled", {
@@ -1799,6 +1853,7 @@ class LiveRunner:
                         "client_order_id": client_order_id,
                         "state": ticket.state.value,
                         "error": ticket.last_error,
+                        "note": note,
                     })
                 if self.alerting is not None and ticket.state in (
                     OrderState.REJECTED, OrderState.CANCELLED, OrderState.TIMEOUT,

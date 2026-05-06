@@ -453,6 +453,42 @@ def _first_rejected_candidates(rows_in: list[dict[str, Any]], result_by_wid: dic
         }
     return sorted(picked.values(), key=lambda x: int(x.get("ts_ms") or 0), reverse=True)[:limit]
 
+def _group_relax_orders(orders: list[dict[str, Any]], results: list[dict[str, Any]], key_fn: Any) -> list[dict[str, Any]]:
+    result_by_wid = {str(x.get("window_id") or ""): x for x in results if x.get("window_id")}
+    rows: dict[str, dict[str, Any]] = {}
+    for o in orders:
+        price = _shadow_price(o)
+        key = str(key_fn(o, price))
+        wid = str(o.get("window_id") or "")
+        r = result_by_wid.get(wid)
+        actual = _actual_dir_from_result(r)
+        direction = str(o.get("best_dir") or item_dir(o) or "").lower()
+        cf = _counterfactual_pnl(direction, actual, price)
+        row = rows.setdefault(key, {"key": key, "count": 0, "filled": 0, "relaxed": 0, "settled_count": 0, "wins": 0, "cf_pnl": 0.0, "amount": 0.0, "prices": [], "evs": []})
+        row["count"] += 1
+        if str(o.get("status") or "").lower() == "filled":
+            row["filled"] += 1
+            row["amount"] += float(safe_float(o.get("fill_amount") or o.get("fill_amt")) or 0.0)
+        if str(o.get("status") or "").lower() == "relaxed":
+            row["relaxed"] += 1
+        if price is not None: row["prices"].append(float(price))
+        ev = safe_float(o.get("best_ev"))
+        if ev is not None: row["evs"].append(float(ev))
+        if cf is not None:
+            row["settled_count"] += 1
+            row["cf_pnl"] += float(cf)
+            if cf > 0: row["wins"] += 1
+    out: list[dict[str, Any]] = []
+    for row in rows.values():
+        prices = row.pop("prices", []); evs = row.pop("evs", [])
+        settled = int(row["settled_count"])
+        row["cf_win_rate"] = row["wins"] / settled if settled else None
+        row["avg_price"] = sum(prices) / len(prices) if prices else None
+        row["avg_ev"] = sum(evs) / len(evs) if evs else None
+        row["fill_rate"] = row["filled"] / row["count"] if row["count"] else None
+        out.append(row)
+    return sorted(out, key=lambda x: (-int(x.get("count") or 0), str(x.get("key") or "")))
+
 def analytics_payload(root: Path) -> dict[str, Any]:
     orders_all = audit_rows(root, (
         "order_filled", "order_failed", "order_compliance_skip",
@@ -526,6 +562,24 @@ def analytics_payload(root: Path) -> dict[str, Any]:
     rejected_by_reason_prefix = _aggregate_rejected(rejected_recent, lambda o, p: f"{_reason_group(o.get('reason'))} / {str(o.get('trigger_pattern') or o.get('seq') or '')[:3] or 'unknown'}", result_by_wid)
     rejected_by_mode_price = _aggregate_rejected(rejected_recent, lambda o, p: f"{_shadow_mode(o)} / {_price_bucket(p)}", result_by_wid)
     rejected_candidates = _first_rejected_candidates(rejected_recent, result_by_wid, limit=40)
+    relax_orders = [x for x in shadow_orders_recent if x.get("relax_tag") or str(x.get("status") or "").lower() == "relaxed"]
+    relax_by_tag = _group_relax_orders(relax_orders, shadow_recent, lambda o, p: str(o.get("relax_tag") or "unknown"))
+    relax_by_price = _group_relax_orders(relax_orders, shadow_recent, lambda o, p: _price_bucket(p))
+    real_relax_events = [x for x in order_events if "relax=mid_040_079_trend" in str(x.get("note") or "")]
+    real_relax_fills = [x for x in real_relax_events if str(x.get("kind")) == "order_filled"]
+    real_relax_fails = [x for x in real_relax_events if str(x.get("kind")) == "order_failed"]
+    depth_rows_raw = read_jsonl(root / "logs" / "orderbook_depth.jsonl", 1000)
+    depth_rows = [x for x in depth_rows_raw if (item_ts(x) or 0) >= REAL_RESULTS_CUTOFF_TS_MS]
+    relax_depth = [x for x in depth_rows if str(x.get("tag") or "") == "mid_040_079_trend"]
+    def _depth_summary(xs: list[dict[str, Any]]) -> dict[str, Any]:
+        vals = []
+        for x in xs:
+            side = "up" if str(x.get("best_dir") or "") == "up" else "down"
+            plan = x.get(side) if isinstance(x.get(side), dict) else {}
+            q = safe_float(plan.get("safe_quote"))
+            if q is not None: vals.append(float(q))
+        vals.sort()
+        return {"count": len(vals), "avg_safe_quote": sum(vals)/len(vals) if vals else None, "min_safe_quote": vals[0] if vals else None, "p50_safe_quote": vals[len(vals)//2] if vals else None, "max_safe_quote": vals[-1] if vals else None}
     return {
         "ok": True,
         "orders": {
@@ -569,6 +623,16 @@ def analytics_payload(root: Path) -> dict[str, Any]:
             "by_mode_price": rejected_by_mode_price,
             "candidates": rejected_candidates,
             "note": "counterfactual uses $2.50 stake and only windows with known settlement result",
+        },
+        "relax": {
+            "shadow_count": len(relax_orders),
+            "by_tag": relax_by_tag,
+            "by_price": relax_by_price,
+            "real_events": len(real_relax_events),
+            "real_filled": len(real_relax_fills),
+            "real_failed": len(real_relax_fails),
+            "real_fill_rate": len(real_relax_fills) / len(real_relax_events) if real_relax_events else None,
+            "depth": _depth_summary(relax_depth),
         },
         "core_logic": {
             "survival": "prefix-specific dynamic lambda0 -> calibrated p_rev_lower",
