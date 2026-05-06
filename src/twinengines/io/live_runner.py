@@ -352,6 +352,14 @@ class LiveRunner:
             self._wait_loop()
         return True
 
+    def _start_order_watch_worker(self) -> None:
+        """Compatibility hook for legacy background order watcher.
+
+        The current FOK path refreshes order truth synchronously per ticket and
+        reconciler remains responsible for account/position observation.
+        """
+        return
+
     # ---------------- 主等待循环 ----------------
 
     def _wait_loop(self) -> None:
