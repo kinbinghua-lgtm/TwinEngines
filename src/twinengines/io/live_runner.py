@@ -857,13 +857,19 @@ class LiveRunner:
                         window_id=window_id, side=side_label, direction=best_dir,
                         size_quote_usdc=single, limit_price=round(limit_px, 4),
                         note=f"ev={best_ev:.3f} kelly={kelly_total:.2f}")
-                    filled_shares = float(getattr(ticket, 'filled_size_shares', 0) or 0)
-                    if filled_shares < 1e-9:
+                    # 验证成交: 查 Polymarket 余额是否减少 (权威方法)
+                    import time as _tm
+                    _tm.sleep(0.5)  # 等链上确认
+                    new_bal = self.poly_client.fetch_account_equity_usdc()
+                    old_bal = self._last_real_balance if hasattr(self, '_last_real_balance') else new_bal
+                    self._last_real_balance = new_bal
+                    # 余额减少约 single 金额 = 成交了
+                    if old_bal is not None and new_bal is not None and (old_bal - new_bal) > single * 0.5:
+                        _REAL_FILLED.add(window_id)  # 成交 → 本窗不再下单
+                    else:
                         self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0,
                                                "rejected", "FOK_rejected", d_abs)
                         return
-                    # 成交 → 标记已成交, 本窗不再下单
-                    _REAL_FILLED.add(window_id)
             except Exception as e:
                 logger.warning("real order submit failed: %s", e)
                 return
