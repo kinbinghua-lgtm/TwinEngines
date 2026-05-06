@@ -1,10 +1,10 @@
 """Single WebUI server for TwinEngines."""
 from __future__ import annotations
-import argparse, json, os, sqlite3, sys, time
+import argparse, json, os, signal, sqlite3, subprocess, sys, time
 from pathlib import Path
 from typing import Any, Optional
 sys.path.insert(0, os.environ.get("TWINENGINES_ROOT", os.path.abspath(".")))
-from flask import Flask, jsonify, redirect, request, send_file, session
+from flask import Flask, jsonify, request, send_file
 
 HERE = Path(__file__).resolve().parent
 ROOT = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 and not str(sys.argv[1]).startswith("-") else Path.cwd().resolve()
@@ -45,6 +45,81 @@ def window_label(wid: str) -> Optional[str]:
     except Exception:
         return None
 
+def pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:
+        return False
+
+def read_pid(path: Path) -> Optional[int]:
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except Exception:
+        return None
+
+def live_pid_file(root: Path) -> Path:
+    return root / "data_runtime" / "live.pid"
+
+def live_command(root: Path) -> list[str]:
+    python = root / ".venv" / "bin" / "python3"
+    exe = str(python) if python.is_file() else sys.executable
+    return [exe, "-m", "src.twinengines.cli", "live-run", "--enable-real", "--record-shadow-signals", "--artifact", "artifact_btc_v6.json"]
+
+def strategy_status(root: Path) -> dict[str, Any]:
+    pid = read_pid(live_pid_file(root))
+    running = bool(pid and pid_alive(pid))
+    return {
+        "ok": True,
+        "running": running,
+        "pid": pid if running else None,
+        "pid_file": str(live_pid_file(root)),
+        "command": " ".join(live_command(root)),
+    }
+
+def stop_strategy(root: Path) -> dict[str, Any]:
+    pid = read_pid(live_pid_file(root))
+    stopped: list[int] = []
+    if pid and pid_alive(pid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+            stopped.append(pid)
+        except Exception:
+            pass
+        deadline = time.time() + 5.0
+        while time.time() < deadline and pid_alive(pid):
+            time.sleep(0.2)
+        if pid_alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL if hasattr(signal, "SIGKILL") else signal.SIGTERM)
+            except Exception:
+                pass
+    try:
+        live_pid_file(root).unlink(missing_ok=True)
+    except Exception:
+        pass
+    return {"ok": True, "running": False, "stopped": stopped}
+
+def start_strategy(root: Path) -> dict[str, Any]:
+    st = strategy_status(root)
+    if st.get("running"):
+        return st | {"started": False, "reason": "already_running"}
+    (root / "logs").mkdir(parents=True, exist_ok=True)
+    (root / "data_runtime").mkdir(parents=True, exist_ok=True)
+    log = open(root / "logs" / "live.log", "ab", buffering=0)
+    env = os.environ.copy()
+    env["TWINENGINES_ROOT"] = str(root)
+    proc = subprocess.Popen(live_command(root), cwd=str(root), stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=(os.name != "nt"), env=env)
+    live_pid_file(root).write_text(str(proc.pid), encoding="utf-8")
+    time.sleep(0.5)
+    return strategy_status(root) | {"started": True}
+
 def audit_rows(root: Path, kinds: tuple[str, ...], n: int) -> list[dict[str, Any]]:
     db = root / "data_runtime" / "state.sqlite"
     if not db.is_file(): return []
@@ -66,22 +141,6 @@ def audit_rows(root: Path, kinds: tuple[str, ...], n: int) -> list[dict[str, Any
 def create_app(*, root: Path, password: Optional[str] = None) -> Flask:
     app = Flask(__name__, static_folder=None)
     app.secret_key = os.environ.get("WEBUI_SECRET", "te-webui-") + str(os.getpid())
-    password = password or os.environ.get("WEBUI_PASSWORD")
-
-    @app.before_request
-    def gate():
-        if request.path in ("/login", "/healthz") or not password or session.get("authed"):
-            return None
-        if request.path.startswith("/api/"):
-            return jsonify({"ok": False, "error": "unauthorized"}), 401
-        return redirect("/login")
-
-    @app.route("/login", methods=["GET", "POST"])
-    def login():
-        if not password: return redirect("/")
-        if request.method == "POST" and request.form.get("password") == password:
-            session["authed"] = True; return redirect("/")
-        return "<form method=post><input name=password type=password autofocus><button>login</button></form>", 401 if request.method == "POST" else 200
 
     @app.route("/")
     def index(): return send_file(str(STATIC / "index.html"))
@@ -89,6 +148,18 @@ def create_app(*, root: Path, password: Optional[str] = None) -> Flask:
     def real(): return redirect("/")
     @app.route("/healthz")
     def healthz(): return jsonify({"ok": True, "root": str(root), "ts_ms": int(time.time() * 1000)})
+
+    @app.route("/api/strategy/status")
+    def api_strategy_status():
+        return jsonify(strategy_status(root))
+
+    @app.route("/api/strategy/start", methods=["POST"])
+    def api_strategy_start():
+        return jsonify(start_strategy(root))
+
+    @app.route("/api/strategy/stop", methods=["POST"])
+    def api_strategy_stop():
+        return jsonify(stop_strategy(root))
 
     @app.route("/api/current_window")
     def current_window():
@@ -141,4 +212,4 @@ def run_webui(*, host: str = "0.0.0.0", port: int = 8080, password: Optional[str
     create_app(root=Path(project_root).resolve(), password=password).run(host=host, port=int(port), debug=False); return 0
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(); p.add_argument("project_root", nargs="?", default=str(ROOT)); p.add_argument("--host", default="0.0.0.0"); p.add_argument("--port", type=int, default=8080); p.add_argument("--password", default=os.environ.get("WEBUI_PASSWORD")); a = p.parse_args(); run_webui(host=a.host, port=a.port, password=a.password, project_root=a.project_root)
+    p = argparse.ArgumentParser(); p.add_argument("project_root", nargs="?", default=str(ROOT)); p.add_argument("--host", default="0.0.0.0"); p.add_argument("--port", type=int, default=8080); p.add_argument("--password", default=None); a = p.parse_args(); run_webui(host=a.host, port=a.port, password=a.password, project_root=a.project_root)

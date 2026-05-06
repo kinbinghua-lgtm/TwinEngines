@@ -8,10 +8,11 @@ function pnl(v){return Number(v||0)>=0?'ok':'bad'}
 function rows(id,a,f){$(id).innerHTML=a.length?a.map(f).join(''):'<tr><td colspan="9" class="muted">暂无数据</td></tr>'}
 async function loadAll(){
   try{
-    let [sum,cw,ro,rr,so,sr,lg,ver]=await Promise.all([
-      api('/api/summary'),api('/api/current_window'),api('/api/real/orders?n=50'),api('/api/real/results?n=50'),api('/api/shadow/orders?n=50'),api('/api/shadow/results?n=50'),api('/api/logs?n=160'),api('/api/version')
+    let [sum,cw,ro,rr,so,sr,lg,ver,st]=await Promise.all([
+      api('/api/summary'),api('/api/current_window'),api('/api/real/orders?n=50'),api('/api/real/results?n=50'),api('/api/shadow/orders?n=50'),api('/api/shadow/results?n=50'),api('/api/logs?n=160'),api('/api/version'),api('/api/strategy/status')
     ]);
     $('health').textContent='正常 '+new Date().toLocaleTimeString('zh-CN',{hour12:false}); $('health').className='pill ok';
+    $('strategy-running').textContent=st.running?'运行中':'已暂停'; $('strategy-running').className=st.running?'ok':'bad'; $('strategy-pid').textContent=st.pid||'--'; $('strategy-cmd').textContent=st.command||'--'; $('btn-start').disabled=!!st.running; $('btn-stop').disabled=!st.running;
     $('m-real').textContent=money(sum.real_balance_usdc); $('m-shadow').textContent=money(sum.shadow_equity_usdc); $('m-window').textContent=cw.window_label||cw.window_id||'--'; $('m-ver').textContent=(ver.deployed||'unknown').slice(0,12);
     $('r-bal').textContent=money(sum.real_balance_usdc); $('r-pend').textContent=money(sum.real_pending_redeem_usdc); $('s-eq').textContent=money(sum.shadow_equity_usdc);
     $('r-fill').textContent=ro.items.filter(x=>x.kind==='order_filled').length; $('r-fail').textContent=ro.items.filter(x=>x.kind==='order_failed').length; $('s-on').textContent=so.items.length; $('s-rn').textContent=sr.items.length;
@@ -24,5 +25,17 @@ async function loadAll(){
     $('logbox').textContent=(lg.items||[]).map(x=>x.text||x).join('\n')||'暂无日志';
   }catch(e){$('health').textContent='异常 '+e; $('health').className='pill bad'}
 }
+
+async function controlStrategy(action){
+  const start=$('btn-start'), stop=$('btn-stop'), msg=$('strategy-msg');
+  start.disabled=true; stop.disabled=true; msg.textContent=(action==='start'?'正在启动...':'正在暂停...');
+  try{
+    const r=await fetch('/api/strategy/'+action,{method:'POST',cache:'no-store'});
+    const j=await r.json();
+    msg.textContent=j.ok?(action==='start'?'启动请求已执行':'暂停请求已执行'):('失败 '+(j.error||''));
+    await loadAll();
+  }catch(e){ msg.textContent='操作失败 '+e; }
+}
+
 document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.sec').forEach(x=>x.classList.remove('active'));b.classList.add('active');$(b.dataset.t).classList.add('active')});
 loadAll(); setInterval(loadAll,5000);
