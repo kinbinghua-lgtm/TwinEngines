@@ -811,7 +811,10 @@ class LiveRunner:
         max_price = ask * (1.0 + slippage_budget) if ask > 0 else ask
         depth_cap = min(ask_sz * max_price * 0.8, 200.0) if ask_sz > 0 and ask > 0 else 50.0
         single = min(remaining, max(depth_cap, 2.50))
-        single = max(single, 2.50)  # 最低 $2.50
+        if remaining < 2.50:
+            single = remaining  # 剩余不足 $2.50 就全下, 不强行拉高
+        elif single < 2.50:
+            single = 2.50       # 预算够但深度薄, 保底 $2.50
 
         # 真实盘: 先提交 FOK, 被拒则跳过 (不扣预算, 等下一信号重试)
         if is_real_mode:
