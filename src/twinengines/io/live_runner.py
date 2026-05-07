@@ -719,11 +719,14 @@ class LiveRunner:
             p_up, p_down = p_up / norm, p_down / norm
         t_rem = float(event.get("t_remaining_sec") or 0)
         trig = event.get("trigger_pattern", "")
+        phase_raw = event.get("phase", 3)
+        phase = 3 if phase_raw is None else int(phase_raw)
+        elapsed_sec = max(0.0, 300.0 - t_rem)
         p_adj = max(p_up, p_down)
         d_abs = float(event.get("d_abs_pct") or 0)
         d_signed = float(event.get("d_signed_pct") or 0)
         best_prob_dir = "up" if p_up >= p_down else "down"
-        if self.exit_guard is not None and is_real_mode and window_id:
+        if self.exit_guard is not None and is_real_mode and window_id and phase >= 2:
             try:
                 self.exit_guard.observe_probability(window_id=window_id, p_up=p_up, p_down=p_down)
             except Exception as e:
@@ -741,6 +744,7 @@ class LiveRunner:
                              "p_up": round(p_up, 3), "p_down": round(p_down, 3),
                              "best_prob_dir": best_prob_dir,
                              "d_signed": round(d_signed, 4), "d_abs": round(d_abs, 4),
+                             "phase": phase, "elapsed_sec": round(elapsed_sec, 0),
                              "min_side_prob": min_side_prob, "min_edge": min_edge,
                              "min_ev": min_ev, "min_kelly_raw": min_kelly_raw})
         try:
@@ -788,9 +792,19 @@ class LiveRunner:
         best_edge = best_side_prob - ask
         best_ev_simple = self._calc_ev(best_side_prob, ask)
         best_kelly_raw = self._raw_kelly_ratio(best_side_prob, ask)
+        is_floor_price_entry = ask < 0.10
+        if is_floor_price_entry:
+            floor_min_prob = 0.62
+            if best_side_prob < floor_min_prob:
+                _SIM_CURRENT["status"] = f"floor_p<{floor_min_prob:.2f}"
+                _SIM_CURRENT["floor_price_entry"] = True
+                _SIM_CURRENT["floor_min_prob"] = floor_min_prob
+                self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, 0, "rejected", f"floor_p<{floor_min_prob:.2f}", d_abs)
+                self._write_current_window_snapshot()
+                return
         
         # 动态阈值：高概率放宽 EV 要求，低概率提高 EV 要求
-        req_edge, req_ev, req_kelly_raw = self._direction_min_thresholds(best_side_prob)
+        req_edge, req_ev, req_kelly_raw = self._direction_min_thresholds(best_side_prob, phase=phase, elapsed_sec=elapsed_sec, has_position=window_id in win_dir)
         
         _SIM_CURRENT["best_dir"] = best_dir
         _SIM_CURRENT["best_side_prob"] = round(best_side_prob, 4)
@@ -827,11 +841,18 @@ class LiveRunner:
             edge=best_edge,
             ev=best_ev_simple,
             kelly_raw=best_kelly_raw,
+            phase=phase,
+            has_position=window_id in win_dir,
         )
+        if is_floor_price_entry:
+            max_stake_ratio = min(max_stake_ratio, 0.06)
+            sizing_fraction = min(sizing_fraction, 0.12)
+            sizing_tier = f"floor_lottery_{sizing_tier}"
         _SIM_CURRENT["sizing_fraction"] = round(sizing_fraction, 4)
         _SIM_CURRENT["max_stake_ratio"] = round(max_stake_ratio, 4)
         _SIM_CURRENT["sizing_tier"] = sizing_tier
-        if self.exit_guard is not None and is_real_mode and window_id:
+        _SIM_CURRENT["floor_price_entry"] = bool(is_floor_price_entry)
+        if self.exit_guard is not None and is_real_mode and window_id and phase >= 2:
             try:
                 self.exit_guard.observe_signal(
                     window_id=window_id,
@@ -870,26 +891,40 @@ class LiveRunner:
                         else:
                             real_kelly_total = 2.50
                     if real_kelly_total >= 2.50:
-                        real_single = min(float(real_kelly_total), max(depth_cap, 2.50))
-                        if real_single < 2.50:
-                            real_single = 2.50
                         active = self.market_resolver.get_active()
                         if active:
                             token_id = active.token_id_yes if best_dir == "up" else active.token_id_no
                             side_label = "DIRECTION"
                             limit_px = round(ask * 1.005 if ask > 0 else ask, 4)
-                            self._submit_real_window_fok(
-                                window_id=window_id,
-                                best_dir=best_dir,
-                                side_label=side_label,
-                                token_id=token_id,
-                                target_quote=float(real_single),
-                                limit_price=float(limit_px),
-                                note=f"p={best_side_prob:.3f} edge={best_edge:.3f} ev={best_ev_simple:.3f} kraw={best_kelly_raw:.3f} kelly={real_kelly_total:.2f}",
-                                sizing_tier=sizing_tier,
+                            platform_min_quote = max(
+                                float(POLYMARKET_PLATFORM.min_order_quote_usdc),
+                                float(POLYMARKET_PLATFORM.min_limit_order_shares) * float(limit_px),
                             )
-                            _SIM_CURRENT["real_status"] = "real_fok_evaluated"
-                            _SIM_CURRENT["real_target_quote"] = round(float(real_single), 2)
+                            if real_kelly_total < platform_min_quote:
+                                if float(real_equity or 0.0) * max_stake_ratio < platform_min_quote:
+                                    _SIM_CURRENT["real_status"] = "real_platform_min_not_met"
+                                    _SIM_CURRENT["real_platform_min_quote"] = round(platform_min_quote, 2)
+                                    real_kelly_total = 0.0
+                                else:
+                                    real_kelly_total = platform_min_quote
+                            if real_kelly_total >= platform_min_quote:
+                                real_single = min(float(real_kelly_total), max(depth_cap, platform_min_quote))
+                                if real_single < platform_min_quote:
+                                    real_single = platform_min_quote
+                                self._submit_real_window_fok(
+                                    window_id=window_id,
+                                    best_dir=best_dir,
+                                    side_label=side_label,
+                                    token_id=token_id,
+                                    target_quote=float(real_kelly_total),
+                                    limit_price=float(limit_px),
+                                    note=f"p={best_side_prob:.3f} edge={best_edge:.3f} ev={best_ev_simple:.3f} kraw={best_kelly_raw:.3f} kelly={real_kelly_total:.2f}",
+                                    sizing_tier=sizing_tier,
+                                    max_attempt_quote=float(real_single),
+                                )
+                                _SIM_CURRENT["real_status"] = "real_fok_evaluated"
+                                _SIM_CURRENT["real_target_quote"] = round(float(real_kelly_total), 2)
+                                _SIM_CURRENT["real_attempt_quote"] = round(float(real_single), 2)
             except Exception as e:
                 logger.warning("real window fok submit failed: %s", e)
                 _SIM_CURRENT["real_status"] = "real_submit_error"
@@ -912,14 +947,19 @@ class LiveRunner:
         except Exception:
             equity = self._sim_equity
             proposed_target = 5.0
-        if proposed_target < 2.50:
-            if equity * max_stake_ratio < 2.50:
-                _SIM_CURRENT["status"] = "Kelly<2.5"
+        platform_min_quote = max(
+            float(POLYMARKET_PLATFORM.min_order_quote_usdc),
+            float(POLYMARKET_PLATFORM.min_limit_order_shares) * float(ask),
+        )
+        if proposed_target < platform_min_quote:
+            if equity * max_stake_ratio < platform_min_quote:
+                _SIM_CURRENT["status"] = f"platform_min<{platform_min_quote:.2f}"
+                _SIM_CURRENT["platform_min_quote"] = round(platform_min_quote, 2)
                 _SIM_CURRENT["best_dir"] = best_dir
-                self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, 0, "rejected", "Kelly<2.5", d_abs)
+                self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, 0, "rejected", f"platform_min<{platform_min_quote:.2f}", d_abs)
                 self._write_current_window_snapshot()
                 return
-            proposed_target = 2.50
+            proposed_target = platform_min_quote
 
         if window_id not in win_budget:
             win_target[window_id] = proposed_target
@@ -1044,6 +1084,7 @@ class LiveRunner:
         limit_price: float,
         note: str,
         sizing_tier: str = "base",
+        max_attempt_quote: Optional[float] = None,
     ) -> Optional[OrderTicket]:
         state = _REAL_WINDOW_ORDERS.get(window_id)
         min_shares = float(POLYMARKET_PLATFORM.min_limit_order_shares)
@@ -1152,11 +1193,24 @@ class LiveRunner:
 
         remaining_shares = float(state.get("remaining_shares", 0.0))
         no_fill_count = int(state.get("no_fill_count", 0))
+        px = max(float(state["limit_price"]), 0.01)
+        min_quote_shares = math.ceil((min_quote / px) * 100.0) / 100.0
+        min_attempt_shares = max(min_shares, min_quote_shares)
+        max_quote_shares = None
+        if max_attempt_quote is not None and float(max_attempt_quote) > 0:
+            max_quote_shares = max(0.0, float(max_attempt_quote) / px)
         if no_fill_count > 0:
-            attempt_shares = remaining_shares if remaining_shares <= min_shares * 2 else min_shares
+            attempt_shares = remaining_shares if remaining_shares <= min_attempt_shares * 2 else min_attempt_shares
         else:
             attempt_shares = remaining_shares
-        attempt_quote = attempt_shares * float(state["limit_price"])
+        if max_quote_shares is not None:
+            if max_quote_shares + 1e-9 >= min_attempt_shares:
+                attempt_shares = min(attempt_shares, max_quote_shares)
+            elif remaining_shares >= min_attempt_shares:
+                attempt_shares = min(min_attempt_shares, remaining_shares)
+        if attempt_shares + 1e-9 < min_attempt_shares and remaining_shares >= min_attempt_shares:
+            attempt_shares = min(min_attempt_shares, remaining_shares)
+        attempt_quote = attempt_shares * px
         if attempt_quote + 1e-9 < min_quote:
             state["locked"] = True
             state["lock_reason"] = "dust_remaining"
@@ -1164,6 +1218,27 @@ class LiveRunner:
         if attempt_shares + 1e-9 < min_shares:
             state["last_error"] = "waiting_min_shares_at_current_price"
             state["last_wait_price"] = float(state["limit_price"])
+            return None
+
+        book = self.poly_client.fetch_book(token_id) if self.poly_client is not None else {}
+        if book.get("stale") or book.get("best_ask") is None:
+            state["last_error"] = "depth_precheck_stale_or_no_ask"
+            state["last_precheck_ts_ms"] = int(time.time() * 1000)
+            return None
+        live_ask = float(book.get("best_ask") or 0.0)
+        live_ask_size = float(book.get("best_ask_size") or 0.0)
+        if live_ask <= 0 or live_ask > float(state["limit_price"]) + 1e-9:
+            state["last_error"] = "ask_moved_above_limit"
+            state["last_live_ask"] = live_ask
+            state["last_limit_price"] = float(state["limit_price"])
+            state["last_precheck_ts_ms"] = int(time.time() * 1000)
+            return None
+        if live_ask_size + 1e-9 < attempt_shares:
+            state["last_error"] = "depth_below_min_chunk"
+            state["last_live_ask"] = live_ask
+            state["last_live_ask_size"] = live_ask_size
+            state["last_attempt_shares_needed"] = float(attempt_shares)
+            state["last_precheck_ts_ms"] = int(time.time() * 1000)
             return None
 
         state["attempt_seq"] = int(state.get("attempt_seq", 0)) + 1
@@ -1219,29 +1294,74 @@ class LiveRunner:
         return max(0.0, (float(win_prob) - float(ask)) / max(1.0 - float(ask), 1e-9))
 
     @staticmethod
-    def _direction_min_thresholds(p_side: float) -> tuple[float, float, float]:
-        """根据方向概率动态调整最低阈值 (min_edge, min_ev, min_kelly_raw)
-        
-        高概率：放宽 EV 要求，因为胜率高、长期稳定
-        低概率：提高 EV 要求，需要更大补偿覆盖风险
-        """
+    def _direction_min_thresholds(
+        p_side: float,
+        *,
+        phase: int = 3,
+        elapsed_sec: float = 300.0,
+        has_position: bool = False,
+    ) -> tuple[float, float, float]:
+        if phase <= 0:
+            if elapsed_sec < 20.0 and not has_position:
+                return 0.15, 0.25, 0.18
+            if p_side >= 0.85:
+                return 0.09, 0.12, 0.10
+            if p_side >= 0.72:
+                return 0.12, 0.18, 0.14
+            return 0.15, 0.25, 0.18
+        if phase == 1:
+            if p_side >= 0.85:
+                return 0.07, 0.08, 0.08
+            if p_side >= 0.80:
+                return 0.075, 0.10, 0.09
+            return 0.10, 0.16, 0.12
+        if phase == 2:
+            if p_side >= 0.88:
+                return 0.08, 0.05, 0.07
+            if p_side >= 0.80:
+                return 0.07, 0.08, 0.10
+            if p_side >= 0.70:
+                return 0.055, 0.08, 0.08
+            return 0.08, 0.14, 0.11
         if p_side >= 0.85:
-            return 0.08, 0.04, 0.06   # exceptional 档位：高把握，允许小 EV
+            return 0.08, 0.04, 0.06
         if p_side >= 0.75:
-            return 0.07, 0.06, 0.07   # strong 档位
+            return 0.055, 0.06, 0.07
         if p_side >= 0.65:
-            return 0.055, 0.08, 0.08  # base 档位（原基准）
+            return 0.055, 0.08, 0.08
         if p_side >= 0.55:
-            return 0.06, 0.12, 0.10   # 低把握：提高 EV 要求
-        return 0.08, 0.15, 0.12       # 极低概率：严格过滤
+            return 0.06, 0.12, 0.10
+        return 0.08, 0.15, 0.12
 
     @staticmethod
-    def _direction_sizing_profile(*, p_side: float, edge: float, ev: float, kelly_raw: float) -> tuple[float, float, str]:
-        if p_side >= 0.85 and edge >= 0.12 and ev >= 0.20 and kelly_raw >= 0.18:
-            return 0.35, 0.18, "exceptional"
-        if p_side >= 0.75 and edge >= 0.09 and ev >= 0.15 and kelly_raw >= 0.13:
-            return 0.28, 0.14, "strong"
-        return 0.20, 0.10, "base"
+    def _direction_sizing_profile(
+        *,
+        p_side: float,
+        edge: float,
+        ev: float,
+        kelly_raw: float,
+        phase: int = 3,
+        has_position: bool = False,
+    ) -> tuple[float, float, str]:
+        if phase <= 0:
+            if p_side >= 0.85 and edge >= 0.09 and ev >= 0.12 and kelly_raw >= 0.10:
+                return 0.22, 0.14, "phase0_aggressive_probe_plus"
+            return 0.18, 0.10, "phase0_aggressive_probe"
+        if phase == 1:
+            if p_side >= 0.85 and edge >= 0.08 and ev >= 0.10 and kelly_raw >= 0.10:
+                return 0.26, 0.16, "phase1_aggressive_confirm"
+            return 0.22, 0.12, "phase1_aggressive_probe"
+        if phase == 2:
+            if p_side >= 0.88 and edge >= 0.08 and ev >= 0.05 and kelly_raw >= 0.10:
+                return 0.32, 0.16, "phase2_exceptional"
+            if p_side >= 0.80 and edge >= 0.07 and ev >= 0.08 and kelly_raw >= 0.10:
+                return 0.28, 0.14, "phase2_strong"
+            return 0.22, 0.10, "phase2_base"
+        if p_side >= 0.90 and edge >= 0.08 and ev >= 0.04 and kelly_raw >= 0.08:
+            return 0.35, 0.18, "phase3_exceptional"
+        if p_side >= 0.75 and edge >= 0.055 and ev >= 0.06 and kelly_raw >= 0.07:
+            return 0.28, 0.14, "phase3_strong"
+        return 0.20, 0.10, "phase3_base"
 
     def _resolve_best_direction_by_ev(self, event: dict, window_id: str):
         if self.poly_client is None or self.market_resolver is None:
@@ -1262,10 +1382,14 @@ class LiveRunner:
         ask_dn = float(book_dn.get("best_ask") or 0.99)
         if ask_up <= 0 or ask_up >= 1 or ask_dn <= 0 or ask_dn >= 1:
             return None, -1.0, ask_up, ask_dn
-        ev_up = self._calc_ev(p_up, ask_up)
-        ev_down = self._calc_ev(p_down, ask_dn)
-        kelly_up = self._raw_kelly_ratio(p_up, ask_up)
-        kelly_down = self._raw_kelly_ratio(p_down, ask_dn)
+        up_allowed = p_up >= 0.55
+        down_allowed = p_down >= 0.55
+        if not up_allowed and not down_allowed:
+            return None, -1.0, ask_up, ask_dn
+        ev_up = self._calc_ev(p_up, ask_up) if up_allowed else -1.0
+        ev_down = self._calc_ev(p_down, ask_dn) if down_allowed else -1.0
+        kelly_up = self._raw_kelly_ratio(p_up, ask_up) if up_allowed else 0.0
+        kelly_down = self._raw_kelly_ratio(p_down, ask_dn) if down_allowed else 0.0
         if kelly_up > 0 or kelly_down > 0:
             if kelly_up >= kelly_down:
                 return "up", ev_up, ask_up, ask_dn

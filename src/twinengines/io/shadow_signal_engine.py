@@ -58,6 +58,7 @@ class _WindowState:
 class ShadowSignalEngine:
     cfg: ShadowSignalEngineCfg
     direction_model: DirectionProbabilityModel
+    direction_models: dict[int, DirectionProbabilityModel] = field(default_factory=dict)
 
     on_signal_event: Optional[Callable[[dict], None]] = None
     audit_writer: Optional[Callable[[str, dict], None]] = None
@@ -84,13 +85,22 @@ class ShadowSignalEngine:
         disable_reversal: bool | None = None,
     ) -> "ShadowSignalEngine":
         del disable_trend, disable_reversal
-        model = DirectionProbabilityModel.load(artifact_path)
+        paths = [p.strip() for p in str(artifact_path).split(",") if p.strip()]
+        models: dict[int, DirectionProbabilityModel] = {}
+        for path in paths:
+            m = DirectionProbabilityModel.load(path)
+            models[int(getattr(m, "prefix_len", 3))] = m
+        if not models:
+            raise ValueError("no direction model artifacts provided")
+        fallback_phase = 3 if 3 in models else sorted(models)[-1]
+        model = models[fallback_phase]
         return cls(
             cfg=ShadowSignalEngineCfg(
                 artifact_path=artifact_path,
                 jsonl_path=jsonl_path,
             ),
             direction_model=model,
+            direction_models=models,
         )
 
     def on_bar(self, bar: KlineBar) -> None:
@@ -105,6 +115,7 @@ class ShadowSignalEngine:
         with self._lock:
             return {
                 "model_version": self.direction_model.model_version,
+                "phase_models": {str(k): v.model_version for k, v in sorted(self.direction_models.items())},
                 "evals_total": self._evals_total,
                 "signals_total": self._signals_total,
                 "windows_seen": self._windows_seen,
@@ -131,14 +142,14 @@ class ShadowSignalEngine:
 
             if st.baseline_price is None:
                 offset_sec = (bar.close_time_ms - st.start_ts_ms) / 1000.0
-                if offset_sec > self.cfg.max_baseline_offset_sec:
+                if offset_sec > 3.0:
                     if not self._backfill_window_from_rest(st):
                         st.skipped = True
                         self._windows_skipped_late_start += 1
                         self._emit_audit("shadow_window_skipped_late_start", {
                             "window_id": st.window_id,
                             "first_bar_offset_sec": round(offset_sec, 2),
-                            "max_allowed_sec": self.cfg.max_baseline_offset_sec,
+                            "reason": "baseline_backfill_failed",
                         })
                         return
                 if st.baseline_price is None:
@@ -157,7 +168,7 @@ class ShadowSignalEngine:
                         "minute_closes": list(st.minute_closes),
                     })
 
-            if st.triggered and st.baseline_price:
+            if st.baseline_price:
                 self._evaluate_signal(st, bar)
 
     def _rotate_window(self, wid_start_ms: int) -> None:
@@ -220,12 +231,36 @@ class ShadowSignalEngine:
         st.trigger_pattern = build_fixed_baseline_sequence(float(st.baseline_price), st.minute_closes[:TRIGGER_AT_MIN])
         st.triggered = True
 
+    def _phase_for_sec(self, sec_in_window: int) -> int:
+        if sec_in_window < 60:
+            return 0
+        if sec_in_window < 120:
+            return 1
+        if sec_in_window < 180:
+            return 2
+        return 3
+
+    def _model_for_phase(self, phase: int) -> DirectionProbabilityModel | None:
+        if self.direction_models:
+            if phase in self.direction_models:
+                return self.direction_models[phase]
+            available = [k for k in self.direction_models if k <= phase]
+            if available:
+                return self.direction_models[max(available)]
+            return self.direction_models[min(self.direction_models)]
+        return self.direction_model
+
     def _evaluate_signal(self, st: _WindowState, bar: KlineBar) -> None:
         sec_in_window = int((bar.close_time_ms - st.start_ts_ms) // 1000)
         if sec_in_window <= st.last_eval_sec:
             return
         st.last_eval_sec = sec_in_window
-        if sec_in_window < TRIGGER_AT_MIN * 60:
+        phase = self._phase_for_sec(sec_in_window)
+        model = self._model_for_phase(phase)
+        if model is None:
+            return
+        required_prefix_len = int(getattr(model, "prefix_len", phase))
+        if len(st.minute_closes) < required_prefix_len:
             return
         baseline = float(st.baseline_price or 0.0)
         if baseline <= 0:
@@ -237,8 +272,8 @@ class ShadowSignalEngine:
         current_price = float(bar.close)
         d_signed = (current_price - baseline) / baseline * 100.0
         vol = self._vol_buffer.snapshot()
-        prefix = str(st.trigger_pattern or "")[:3]
-        out = self.direction_model.predict(DirectionProbabilityInput(
+        prefix = build_fixed_baseline_sequence(float(baseline), st.minute_closes[:required_prefix_len]) if required_prefix_len > 0 else ""
+        out = model.predict(DirectionProbabilityInput(
             prefix=prefix,
             d_signed=d_signed,
             t_remaining=t_remaining,
@@ -270,6 +305,8 @@ class ShadowSignalEngine:
             "best_prob_dir": "up" if out.p_up >= out.p_down else "down",
             "best_prob": round(max(out.p_up, out.p_down), 6),
             "model_version": out.model_version,
+            "phase": phase,
+            "prefix_len": required_prefix_len,
             "vol_features": {k: round(float(v), 8) for k, v in vol.items()},
             "source": "direction_probability_engine",
             "signal_index_in_window": int(st.signal_count),

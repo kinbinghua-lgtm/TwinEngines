@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
@@ -239,9 +240,34 @@ class PositionExitGuard:
             if bid <= 0:
                 pos.last_reason = "exit_no_best_bid"
                 break
-            chunk = min_shares if pos.remaining_shares > min_shares * 2 else pos.remaining_shares
-            if chunk * bid < float(self.cfg.min_exit_quote_usdc):
+            min_exit_quote = float(self.cfg.min_exit_quote_usdc)
+            min_quote_shares = math.ceil((min_exit_quote / bid) * 100.0) / 100.0
+            min_sell_shares = max(min_shares, min_quote_shares)
+            if pos.remaining_shares + 1e-9 < min_sell_shares:
+                if pos.remaining_shares * bid >= min_exit_quote:
+                    chunk = pos.remaining_shares
+                else:
+                    pos.last_reason = "exit_quote_too_small"
+                    self._audit("exit_guard_exit_quote_too_small", pos, {
+                        "reason": reason,
+                        "bid": round(bid, 4),
+                        "remaining_shares": round(float(pos.remaining_shares), 4),
+                        "remaining_quote": round(float(pos.remaining_shares) * bid, 4),
+                        "min_exit_quote": round(min_exit_quote, 4),
+                        "min_sell_shares": round(min_sell_shares, 4),
+                    })
+                    break
+            else:
+                chunk = min_sell_shares if pos.remaining_shares > min_sell_shares * 2 else pos.remaining_shares
+            if chunk * bid < min_exit_quote:
                 pos.last_reason = "exit_quote_too_small"
+                self._audit("exit_guard_exit_quote_too_small", pos, {
+                    "reason": reason,
+                    "bid": round(bid, 4),
+                    "target_shares": round(chunk, 4),
+                    "target_quote": round(chunk * bid, 4),
+                    "min_exit_quote": round(min_exit_quote, 4),
+                })
                 break
             pos.exit_seq += 1
             coid = f"{pos.window_id}:{pos.direction}:exit:{reason}:{pos.exit_seq}"

@@ -9,8 +9,14 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-PREFIXES = ["000", "001", "010", "011", "100", "101", "110", "111"]
 EPS = 1e-6
+WINDOW_MINUTES = 5
+
+
+def prefix_values(prefix_len: int) -> list[str]:
+    if prefix_len <= 0:
+        return []
+    return [format(i, f"0{prefix_len}b") for i in range(2 ** prefix_len)]
 
 
 @dataclass(frozen=True)
@@ -32,6 +38,7 @@ class DirectionProbabilityOutput:
     p_down: float
     model_version: str
     features: dict[str, float | int | str]
+    prefix_len: int = 3
 
 
 @dataclass
@@ -93,6 +100,7 @@ class DirectionProbabilityModel:
     feature_columns: list[str]
     model_version: str = "direction_probability_v1"
     metadata: dict[str, Any] = field(default_factory=dict)
+    prefix_len: int = 3
 
     @classmethod
     def load(cls, path: str | Path) -> "DirectionProbabilityModel":
@@ -107,11 +115,14 @@ class DirectionProbabilityModel:
         feature_columns = list(payload.get("feature_columns") or [])
         if model is None or not feature_columns:
             raise ValueError("direction model artifact missing model or feature_columns")
+        metadata = dict(payload.get("metadata") or {})
+        prefix_len = int(payload.get("prefix_len", metadata.get("prefix_len", 3)))
         return cls(
             model=model,
             feature_columns=feature_columns,
             model_version=str(payload.get("model_version") or payload.get("schema_version") or "direction_probability_v1"),
-            metadata=dict(payload.get("metadata") or {}),
+            metadata=metadata,
+            prefix_len=prefix_len,
         )
 
     def predict(self, x: DirectionProbabilityInput) -> DirectionProbabilityOutput:
@@ -124,16 +135,18 @@ class DirectionProbabilityModel:
             p_down=1.0 - p_up,
             model_version=self.model_version,
             features=row,
+            prefix_len=self.prefix_len,
         )
 
-    @staticmethod
-    def _make_feature_row(x: DirectionProbabilityInput) -> dict[str, float | int | str]:
-        prefix = str(x.prefix)[:3]
+    def _make_feature_row(self, x: DirectionProbabilityInput) -> dict[str, float | int | str]:
+        prefix_len = max(0, min(3, int(self.prefix_len)))
+        prefix = str(x.prefix or "")[:prefix_len]
         d_signed = float(x.d_signed)
         d_abs = abs(d_signed)
         t_remaining = float(x.t_remaining)
         vol30 = float(x.vol_30s)
         vol60 = float(x.vol_60s)
+        obs_duration_sec = max(float((WINDOW_MINUTES - prefix_len) * 60), 1.0)
         row: dict[str, float | int | str] = {
             "d_signed": d_signed,
             "d_abs": d_abs,
@@ -147,10 +160,10 @@ class DirectionProbabilityModel:
             "range_60s": float(x.range_60s),
             "d_over_vol30": max(-50.0, min(50.0, d_signed / (vol30 + EPS))),
             "d_over_vol60": max(-50.0, min(50.0, d_signed / (vol60 + EPS))),
-            "t_norm": t_remaining / 120.0,
+            "t_norm": t_remaining / obs_duration_sec,
             "is_above_open": int(d_signed > 0),
         }
-        for p in PREFIXES:
+        for p in prefix_values(prefix_len):
             is_p = int(prefix == p)
             row[f"prefix_{p}"] = is_p
             row[f"{p}_d"] = is_p * d_signed
@@ -160,10 +173,12 @@ class DirectionProbabilityModel:
 
 
 def build_direction_artifact_payload(*, model: Any, feature_columns: list[str], metadata: dict[str, Any]) -> dict[str, Any]:
+    prefix_len = int(metadata.get("prefix_len", 3))
     return {
-        "schema_version": "direction_probability_v1",
-        "model_version": str(metadata.get("model_version") or "direction_probability_vol_v1"),
-        "semantic": "P(close_m5 > open_m5 | prefix, d_signed, t_remaining, realized_volatility_features)",
+        "schema_version": "direction_probability_phase_v1",
+        "model_version": str(metadata.get("model_version") or f"direction_probability_phase{prefix_len}_v1"),
+        "semantic": "P(close_m5 > open_m5 | phase_prefix, d_signed, t_remaining, realized_volatility_features)",
+        "prefix_len": prefix_len,
         "model": model,
         "feature_columns": list(feature_columns),
         "metadata": dict(metadata),
