@@ -234,6 +234,29 @@ def coverage_stats(root: Path, args: Any, result_items: list[dict[str, Any]]) ->
     covered = len(windows)
     return {"coverage_windows": covered, "coverage_total_windows": total_windows, "coverage_rate": covered / total_windows if total_windows else None, "coverage_start_ts_ms": start, "coverage_end_ts_ms": now}
 
+def classify_order_error(x: dict[str, Any]) -> str:
+    raw = str(x.get("error") or x.get("last_error") or x.get("state") or x.get("status") or "")
+    msg = raw.lower()
+    if str(x.get("kind") or "") == "order_filled":
+        return "filled"
+    if "fok_no_fill" in msg or "fully filled" in msg or "not filled" in msg or "couldn't be fully filled" in msg:
+        return "fok_no_fill/liquidity_or_price"
+    if "invalid amounts" in msg or "max accuracy" in msg or "precision" in msg:
+        return "amount_precision"
+    if "buy_below_floor" in msg:
+        return "buy_below_floor"
+    if "size_below_min" in msg or "min shares" in msg or "minimum" in msg:
+        return "below_min_size"
+    if "balance" in msg or "allowance" in msg or "not enough" in msg:
+        return "balance_or_allowance"
+    if "timeout" in msg or "unknown_after_order_query" in msg or "unknown_fok_outcome" in msg or "unknown_no_order_id" in msg:
+        return "unknown_or_timeout"
+    if "circuit_open" in msg:
+        return "circuit_open"
+    if raw:
+        return "other_error"
+    return "unknown"
+
 def summary_payload(root: Path) -> dict[str, Any]:
     real = read_json(root / "data_runtime" / "real_balance.json") or {}; real_ok = bool(real.get("ok"))
     return {"ok": True, "real_balance_usdc": safe_float(real.get("balance_usdc")) if real_ok else None, "real_pending_redeem_usdc": safe_float(real.get("pending_redeem")) if real_ok else None, "real_redeem_ok": real.get("redeem_ok") if real else None, "shadow_equity_usdc": read_float(root / "data_runtime" / "sim_equity.txt")}
@@ -306,7 +329,13 @@ def create_app(*, root: Path, password: Optional[str] = None) -> Flask:
     def real_orders():
         n = int(request.args.get("n", request.args.get("limit", "20")))
         items = filter_items(audit_rows(root, ("order_filled", "order_failed", "order_compliance_skip"), max(n * 4, n)), request.args)
-        return jsonify({"ok": True, "items": items[:n], "source": "state.sqlite:audit_events"})
+        for x in items:
+            x["error_class"] = classify_order_error(x)
+        counts: dict[str, int] = {}
+        for x in items:
+            k = str(x.get("error_class") or "unknown")
+            counts[k] = counts.get(k, 0) + 1
+        return jsonify({"ok": True, "items": items[:n], "error_classes": sorted(counts.items(), key=lambda kv: kv[1], reverse=True), "source": "state.sqlite:audit_events"})
     @app.route("/api/real/results")
     def real_results():
         n = int(request.args.get("n", request.args.get("limit", "20"))); off = int(request.args.get("offset", "0"))

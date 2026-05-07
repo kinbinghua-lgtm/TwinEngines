@@ -10,8 +10,14 @@ function clsPnl(v){return Number(v||0)>=0?'ok':'bad'}
 function wonText(v){return v===true?'<span class="ok">赢</span>':v===false?'<span class="bad">输</span>':'<span class="unknown">--</span>'}
 function rows(id,a,f,col=9){$(id).innerHTML=a&&a.length?a.map(f).join(''):`<tr><td colspan="${col}" class="muted">暂无数据</td></tr>`}
 function setText(id,v){const e=$(id);if(e)e.textContent=v}
+async function copyText(text,msgId){try{await navigator.clipboard.writeText(text);setText(msgId,'已复制 '+new Date().toLocaleTimeString('zh-CN',{hour12:false}))}catch(e){setText(msgId,'复制失败，请手动选择文本')}}
+function orderAuditRows(){return (lastRealOrders||[]).map(x=>({time:ts(x.ts_ms),kind:x.kind||'',window_id:x.window_id||'',direction:(x.direction||x.side||'').toUpperCase(),amount:x.size_usdc??x.amount??'',class:x.error_class||'',error:x.error||x.last_error||x.state||x.status||'',order:String(x.client_order_id||x.exchange_order_id||'')}))}
+function copyRealOrdersTSV(){const cols=['time','kind','window_id','direction','amount','class','error','order'];const rows=[cols.join('\t'),...orderAuditRows().map(r=>cols.map(c=>String(r[c]??'').replace(/[\t\r\n]+/g,' ')).join('\t'))];copyText(rows.join('\n'),'real-orders-copy-msg')}
+function copyRealOrdersJSON(){copyText(JSON.stringify(lastRealOrders||[],null,2),'real-orders-copy-msg')}
 function stat(prefix,s){setText(`${prefix}-count`,s.count??0);setText(`${prefix}-wr`,pct(s.win_rate));setText(`${prefix}-pnl`,money(s.total_pnl));setText(`${prefix}-avgpnl`,money(s.avg_pnl));setText(`${prefix}-avgamt`,money(s.avg_amount))}
 let liveClock={t:null,at:0};
+let lastRealOrders=[];
+let lastRealOrderClasses=[];
 function tickTime(){if(liveClock.t==null){setText('m-time','--');return}const left=Math.max(0,liveClock.t-(Date.now()-liveClock.at)/1000);setText('m-time',Math.round(left)+'s')}
 function statusZh(s){return s==='pass'?'通过':s==='fail'?'未通过':s==='warn'?'注意':'待判断'}
 function orderBox(o){return o?`<div class="notice"><b>当前窗口真实 FOK 已成交</b><br>方向：<b>${esc((o.direction||o.side||'').toUpperCase())}</b> ｜ 金额：<b>${money(o.size_usdc||o.amount)}</b> ｜ 价格：<b>${num(o.price,4)}</b><br><span class="muted">订单：${esc(String(o.exchange_order_id||o.client_order_id||'').slice(-32))} ｜ 时间：${ts(o.ts_ms)}</span></div>`:''}
@@ -28,7 +34,8 @@ async function controlStrategy(action){const msg=$('strategy-msg');$('btn-start'
 async function loadReal(){
   const [r,o]=await Promise.all([api('/api/real/results?limit=20&'+qs('real-filters')),api('/api/real/orders?limit=20&'+qs('real-filters'))]);const s=r.stats||{};stat('real',s);$('real-bal').textContent=money(s.real_balance_usdc);$('real-coverage').textContent=pct(s.coverage_rate);$('real-coverage-sub').textContent=`${s.coverage_windows??0}/${s.coverage_total_windows??0} 个5分钟窗口`;
   rows('real-results',r.items,x=>`<tr><td><div>${ts(x.ts_ms)}</div><div class="mono muted">${esc(x.window_id)}</div></td><td class="mono">${esc(x.seq||'')}</td><td>${esc((x.direction||x.dir||'').toUpperCase())}</td><td class="right">${money(x.amount||x.fill_amt)}</td><td class="right ${clsPnl(x.pnl)}">${money(x.pnl)}</td><td>${wonText(x.won)}</td><td class="right">${money(x.real_balance_usdc||x.balance_usdc||x.equity)}</td></tr>`,7);
-  rows('real-orders',o.items,x=>`<tr><td>${ts(x.ts_ms)}</td><td>${esc(x.kind)}</td><td class="mono">${esc(x.window_id||'')}</td><td>${esc((x.direction||x.side||'').toUpperCase())}</td><td>${money(x.size_usdc||x.amount)}</td><td>${esc(x.error||x.last_error||x.state||x.status||'')}</td><td class="mono">${esc(String(x.client_order_id||x.exchange_order_id||'').slice(-28))}</td></tr>`,7);
+  lastRealOrders=o.items||[];lastRealOrderClasses=o.error_classes||[];setText('real-orders-classes','失败分类：'+(lastRealOrderClasses.length?lastRealOrderClasses.map(x=>`${x[0]}=${x[1]}`).join('，'):'--'));
+  rows('real-orders',o.items,x=>`<tr><td>${ts(x.ts_ms)}</td><td>${esc(x.kind)}</td><td class="mono">${esc(x.window_id||'')}</td><td>${esc((x.direction||x.side||'').toUpperCase())}</td><td>${money(x.size_usdc||x.amount)}</td><td>${esc(x.error_class||'')}</td><td>${esc(x.error||x.last_error||x.state||x.status||'')}</td><td class="mono">${esc(String(x.client_order_id||x.exchange_order_id||'').slice(-28))}</td></tr>`,8);
 }
 async function loadShadow(){
   const [r,o]=await Promise.all([api('/api/shadow/results?limit=20&'+qs('shadow-filters')),api('/api/shadow/orders?limit=20&'+qs('shadow-filters'))]);const s=r.stats||{};$('shadow-count').textContent=s.count??0;$('shadow-wr2').textContent=pct(s.win_rate);$('shadow-pnl').textContent=money(s.total_pnl);$('shadow-avgpnl').textContent=money(s.avg_pnl);$('shadow-avgamt').textContent=money(s.avg_amount);$('shadow-bal').textContent=money(s.shadow_equity_usdc);
