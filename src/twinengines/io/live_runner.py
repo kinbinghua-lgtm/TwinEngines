@@ -930,13 +930,22 @@ class LiveRunner:
             return
 
         if matched > 1e-9:
+            fill_quote = matched * float(state["limit_price"])
+            state["spent_quote"] = min(
+                float(state["target_quote"]),
+                float(state.get("spent_quote", 0.0)) + fill_quote,
+            )
+            state["remaining_quote"] = max(
+                0.0,
+                float(state["target_quote"]) - float(state["spent_quote"]),
+            )
             state["filled_shares"] = min(
                 float(state["target_shares"]),
                 float(state.get("filled_shares", 0.0)) + matched,
             )
             state["remaining_shares"] = max(
                 0.0,
-                float(state["target_shares"]) - float(state["filled_shares"]),
+                float(state["remaining_quote"]) / max(float(state["limit_price"]), 0.01),
             )
 
         min_shares = float(POLYMARKET_PLATFORM.min_limit_order_shares)
@@ -994,6 +1003,8 @@ class LiveRunner:
                 "side_label": side_label,
                 "token_id": token_id,
                 "target_quote": float(target_quote),
+                "spent_quote": 0.0,
+                "remaining_quote": float(target_quote),
                 "target_shares": float(latest_target_shares),
                 "filled_shares": 0.0,
                 "remaining_shares": float(latest_target_shares),
@@ -1021,6 +1032,8 @@ class LiveRunner:
                         "side_label": side_label,
                         "token_id": token_id,
                         "target_quote": float(target_quote),
+                        "spent_quote": 0.0,
+                        "remaining_quote": float(target_quote),
                         "target_shares": float(latest_target_shares),
                         "remaining_shares": float(latest_target_shares),
                         "limit_price": float(limit_price),
@@ -1040,8 +1053,25 @@ class LiveRunner:
                     "side_label": side_label,
                     "token_id": token_id,
                     "target_quote": float(target_quote),
+                    "spent_quote": 0.0,
+                    "remaining_quote": float(target_quote),
                     "target_shares": float(latest_target_shares),
                     "remaining_shares": float(latest_target_shares),
+                    "limit_price": float(limit_price),
+                    "locked": False,
+                    "lock_reason": None,
+                })
+            else:
+                spent_quote = max(0.0, float(state.get("spent_quote", 0.0)))
+                total_quote = max(float(state.get("target_quote", 0.0)), float(target_quote))
+                remaining_quote = max(0.0, total_quote - spent_quote)
+                state.update({
+                    "side_label": side_label,
+                    "token_id": token_id,
+                    "target_quote": total_quote,
+                    "remaining_quote": remaining_quote,
+                    "target_shares": float(state.get("filled_shares", 0.0)) + remaining_quote / max(float(limit_price), 0.01),
+                    "remaining_shares": remaining_quote / max(float(limit_price), 0.01),
                     "limit_price": float(limit_price),
                     "locked": False,
                     "lock_reason": None,
