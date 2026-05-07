@@ -31,6 +31,7 @@ import urllib.request
 import urllib.parse
 import hashlib
 from dataclasses import dataclass, field
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from enum import Enum
 from typing import Any, Optional
 
@@ -96,24 +97,28 @@ class OrderTicket:
 # ============================================================
 
 def _tick_round(price: float, tick: float = 0.01) -> float:
-    return math.floor(price / tick) * tick
+    px = Decimal(str(price))
+    tk = Decimal(str(tick))
+    return float((px / tk).to_integral_value(rounding=ROUND_FLOOR) * tk)
 
 def _round_order_size_shares_up(raw_size: float, min_sz: float) -> float:
     """CLOB 对手数量精度（常见限制 taker 最多 4 位小数）；向上取整避免名义不足。"""
     x = max(float(raw_size), float(min_sz))
-    return round(math.ceil(x * 10000 - 1e-9) / 10000, 4)
+    return float(Decimal(str(x)).quantize(Decimal("0.0001"), rounding=ROUND_CEILING))
 
 def _round_buy_size_for_quote_cents(*, price: float, raw_size: float, min_sz: float) -> float:
     """BUY FOK 的 price*size 会形成美元金额；Polymarket 要求金额最多 2 位小数。"""
-    px = max(float(price), 0.01)
-    target = max(float(raw_size), float(min_sz))
-    cents = max(1, math.ceil(px * target * 100 - 1e-9))
+    px = max(Decimal(str(price)), Decimal("0.01"))
+    target = max(Decimal(str(raw_size)), Decimal(str(min_sz)))
+    cents = (px * target * Decimal("100")).to_integral_value(rounding=ROUND_CEILING)
+    cents = max(Decimal("1"), cents)
     for _ in range(10000):
-        size = round((cents / 100.0) / px, 4)
-        if size + 1e-12 >= target and abs((size * px * 100) - round(size * px * 100)) < 1e-7:
-            return size
-        cents += 1
-    return _round_order_size_shares_up(target, min_sz)
+        size = (cents / Decimal("100") / px).quantize(Decimal("0.0001"), rounding=ROUND_CEILING)
+        quote_cents = size * px * Decimal("100")
+        if size >= target and quote_cents == quote_cents.to_integral_value():
+            return float(size)
+        cents += Decimal("1")
+    return _round_order_size_shares_up(float(target), float(min_sz))
 
 def _is_fok_no_fill_error(err: str) -> bool:
     msg = (err or "").lower()
@@ -123,6 +128,16 @@ def _is_fok_no_fill_error(err: str) -> bool:
         or "couldn't be fully filled" in msg
         or "could not be fully filled" in msg
         or "fully filled or killed" in msg
+    )
+
+def _is_amount_precision_error(err: str) -> bool:
+    msg = (err or "").lower()
+    return (
+        "invalid amounts" in msg
+        or "max accuracy" in msg
+        or "precision" in msg
+        or "maker amount supports" in msg
+        or "taker amount" in msg
     )
 
 def _http_get_json(url: str, *, timeout: float, user_agent: str) -> Any:
@@ -813,6 +828,9 @@ class PolymarketClient:
                 if _is_fok_no_fill_error(err):
                     ticket.state = OrderState.REJECTED
                     ticket.last_error = "fok_no_fill"
+                elif _is_amount_precision_error(err):
+                    ticket.state = OrderState.REJECTED
+                    ticket.last_error = f"amount_precision:{err[:120]}"
                 else:
                     ticket.state = OrderState.TIMEOUT
                     ticket.last_error = f"post_order_exception:{err[:160]}"
