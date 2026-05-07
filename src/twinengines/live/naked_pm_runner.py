@@ -52,6 +52,15 @@ def _kv_sync_last_equity_after_trade(poly: PolymarketClient) -> None:
     except Exception as e:
         logger.warning("kv_sync_last_equity_after_trade failed: %s", e)
 
+def _append_order_audit(poly: PolymarketClient, kind: str, payload: dict[str, Any]) -> None:
+    try:
+        db_path = str(getattr(poly.runtime_cfg, "state_db_path", "") or "").strip()
+        if not db_path:
+            return
+        StateStore(db_path=db_path).append_audit(kind, payload)
+    except Exception as e:
+        logger.warning("append_order_audit failed kind=%s err=%s", kind, e)
+
 def _load_state(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
@@ -147,6 +156,8 @@ def _run_auto_redeem_tick(
     # 检查最近 20 个合约（增加范围）
     check_cids = recent_cids[-20:] if len(recent_cids) > 20 else recent_cids
     redeemable = []
+    settled_cids = set(str(x) for x in st.get("settled_condition_ids", []))
+    recent_orders = st.get("recent_orders_by_condition", {}) if isinstance(st.get("recent_orders_by_condition", {}), dict) else {}
     
     for cid in check_cids:
         try:
@@ -156,8 +167,30 @@ def _run_auto_redeem_tick(
                     continue
                 curr_price = p.get("currPrice")
                 size = p.get("size")
-                # currPrice=1 表示已结算且赢了
-                if curr_price == 1 and size and float(size) > 0:
+                curr_price_f = None
+                try:
+                    curr_price_f = float(curr_price) if curr_price is not None else None
+                except Exception:
+                    curr_price_f = None
+                if curr_price_f in (0.0, 1.0) and size and float(size) > 0 and str(cid) not in settled_cids:
+                    base = dict(recent_orders.get(str(cid)) or {})
+                    won = curr_price_f >= 1.0
+                    pnl = p.get("totalPnl")
+                    payload = base | {
+                        "condition_id": str(cid),
+                        "token_id": p.get("token_id") or p.get("asset"),
+                        "settled_size": float(size),
+                        "resolved_price": float(curr_price_f),
+                        "won": bool(won),
+                        "result": "win" if won else "loss",
+                        "pnl": float(pnl) if pnl is not None else None,
+                        "pnl_usdc": float(pnl) if pnl is not None else None,
+                        "outcome": p.get("outcome"),
+                        "source": "fetch_market_positions",
+                    }
+                    _append_order_audit(poly, "order_settled", payload)
+                    settled_cids.add(str(cid))
+                if curr_price_f == 1.0 and size and float(size) > 0:
                     redeemable.append({
                         "condition_id": str(cid),
                         "token_id": p.get("token_id") or p.get("asset"),
@@ -169,6 +202,8 @@ def _run_auto_redeem_tick(
             logger.debug("fetch_market_positions failed for cid=%s: %s", str(cid)[:12], e)
             continue
     
+    st["settled_condition_ids"] = sorted(settled_cids)
+    _save_state(state_path, st)
     if not redeemable:
         return {"phase": "auto_redeem", "action": "no_redeemable_positions", "checked": len(check_cids)}
     
@@ -542,6 +577,31 @@ def run_naked_third_digit_tick(
         "filled_size_shares": float(ticket.filled_size_shares or 0.0),
     }
 
+    audit_payload = {
+        "window_id": f"w{int(window_start_ms)}",
+        "condition_id": cid,
+        "side": "UP" if pred_up else "DOWN",
+        "direction": "up" if pred_up else "down",
+        "seq": pred.get("current_prefix") or pred.get("prefix_bucket_used") or pred.get("trigger") or "",
+        "size_usdc": float(size_quote),
+        "amount": float(size_quote),
+        "price": float(limit_price),
+        "client_order_id": coid_final,
+        "exchange_order_id": ticket.exchange_order_id,
+        "state": ticket.state.value,
+        "error": ticket.last_error,
+        "p_up": float(pred.get("p_up", 0.0)),
+        "p_down": float(pred.get("p_down", 0.0)),
+        "filled_size_shares": float(ticket.filled_size_shares or 0.0),
+        "order_plan": out.get("order_plan"),
+    }
+    if ticket.state in (OrderState.FILLED, OrderState.PARTIAL):
+        _append_order_audit(poly, "order_filled", audit_payload)
+    elif ticket.state == OrderState.DRY_RUN_SHADOW:
+        _append_order_audit(poly, "order_submitted", audit_payload)
+    else:
+        _append_order_audit(poly, "order_failed", audit_payload)
+
     if ticket.state not in (OrderState.FILLED, OrderState.PARTIAL, OrderState.DRY_RUN_SHADOW):
         out["action"] = "fok_not_filled"
         out["ticket_state"] = ticket.state.value
@@ -563,6 +623,14 @@ def run_naked_third_digit_tick(
     if len(recent_cids) > 20:
         recent_cids = recent_cids[-20:]
     st["recent_condition_ids"] = recent_cids
+    recent_orders = st.get("recent_orders_by_condition", {})
+    if not isinstance(recent_orders, dict):
+        recent_orders = {}
+    recent_orders[cid] = audit_payload
+    if len(recent_orders) > 50:
+        keep = set(recent_cids[-20:])
+        recent_orders = {k: v for k, v in recent_orders.items() if k in keep}
+    st["recent_orders_by_condition"] = recent_orders
     
     _save_state(state_path, st)
     if ticket.state in (OrderState.FILLED, OrderState.PARTIAL):
