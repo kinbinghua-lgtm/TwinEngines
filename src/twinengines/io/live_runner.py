@@ -730,6 +730,20 @@ class LiveRunner:
         p_adj = float(event.get("p_rev") or 0.3)
         d_abs = float(event.get("d_abs_pct") or 0)
         td = event.get("trigger_direction", "")
+        if td == "up":
+            p_up = 1.0 - float(p_rev)
+            p_down = float(p_rev)
+        elif td == "down":
+            p_up = float(p_rev)
+            p_down = 1.0 - float(p_rev)
+        else:
+            p_up = 0.5
+            p_down = 0.5
+        if self.exit_guard is not None and is_real_mode and window_id:
+            try:
+                self.exit_guard.observe_probability(window_id=window_id, p_up=p_up, p_down=p_down)
+            except Exception as e:
+                logger.debug("exit_guard observe_probability failed window_id=%s err=%s", window_id, e)
 
         PREFIX_D_CLIFF = {"000":0.0284,"001":0.0169,"010":0.0187,"011":0.0228,
                           "100":0.0232,"101":0.0191,"110":0.0172,"111":0.0317}
@@ -803,6 +817,18 @@ class LiveRunner:
             return
 
         ask = ask_up if best_dir == "up" else ask_down
+        if self.exit_guard is not None and is_real_mode and window_id:
+            try:
+                self.exit_guard.observe_signal(
+                    window_id=window_id,
+                    best_dir=best_dir,
+                    p_up=p_up,
+                    p_down=p_down,
+                    ts_ms=int(time.time() * 1000),
+                )
+            except Exception as e:
+                logger.warning("exit_guard observe_signal failed window_id=%s err=%s", window_id, e)
+
         poly = event.get("polymarket") or {}
         ask_sz = float(poly.get("best_ask_size_up", 0)) if best_dir == "up" else float(poly.get("best_ask_size_dn", 0))
         slippage_budget = 0.005
