@@ -953,6 +953,7 @@ class LiveRunner:
 
         err = str(ticket.last_error or "").lower()
         if ticket.state in _REAL_RETRYABLE_STATES and ("fok_no_fill" in err or "not_fill" in err or "not filled" in err or "fully filled" in err):
+            state["no_fill_count"] = int(state.get("no_fill_count", 0)) + 1
             return
         if ticket.state == OrderState.DRY_RUN_SHADOW:
             state["locked"] = True
@@ -980,44 +981,83 @@ class LiveRunner:
     ) -> Optional[OrderTicket]:
         state = _REAL_WINDOW_ORDERS.get(window_id)
         min_shares = float(POLYMARKET_PLATFORM.min_limit_order_shares)
+        min_quote = float(POLYMARKET_PLATFORM.min_order_quote_usdc)
+        latest_target_shares = float(target_quote) / max(float(limit_price), 0.01)
+        if latest_target_shares + 1e-9 < min_shares:
+            logger.info("real window skip below min shares window_id=%s shares=%.4f", window_id, latest_target_shares)
+            return None
+
         if state is None:
-            target_shares = float(target_quote) / max(float(limit_price), 0.01)
-            if target_shares + 1e-9 < min_shares:
-                logger.info("real window skip below min shares window_id=%s shares=%.4f", window_id, target_shares)
-                return None
             state = {
                 "window_id": window_id,
                 "direction": best_dir,
                 "side_label": side_label,
                 "token_id": token_id,
                 "target_quote": float(target_quote),
-                "target_shares": float(target_shares),
+                "target_shares": float(latest_target_shares),
                 "filled_shares": 0.0,
-                "remaining_shares": float(target_shares),
+                "remaining_shares": float(latest_target_shares),
                 "limit_price": float(limit_price),
                 "locked": False,
                 "lock_reason": None,
                 "unknown_outcome": False,
                 "attempt_in_flight": False,
                 "attempt_seq": 0,
+                "no_fill_count": 0,
                 "created_ts_ms": int(time.time() * 1000),
             }
             _REAL_WINDOW_ORDERS[window_id] = state
-        elif best_dir != state.get("direction"):
-            state["locked"] = True
-            state["lock_reason"] = "reverse_signal"
-            logger.warning(
-                "real window reverse lock window_id=%s new=%s old=%s",
-                window_id, best_dir, state.get("direction"),
-            )
-            return None
+        else:
+            filled_shares = float(state.get("filled_shares", 0.0))
+            no_position = filled_shares <= 1e-9 and not bool(state.get("unknown_outcome"))
+            if best_dir != state.get("direction"):
+                if no_position:
+                    logger.info(
+                        "real window direction refreshed after no-fill/no-position window_id=%s new=%s old=%s",
+                        window_id, best_dir, state.get("direction"),
+                    )
+                    state.update({
+                        "direction": best_dir,
+                        "side_label": side_label,
+                        "token_id": token_id,
+                        "target_quote": float(target_quote),
+                        "target_shares": float(latest_target_shares),
+                        "remaining_shares": float(latest_target_shares),
+                        "limit_price": float(limit_price),
+                        "locked": False,
+                        "lock_reason": None,
+                    })
+                else:
+                    state["locked"] = True
+                    state["lock_reason"] = "reverse_signal"
+                    logger.warning(
+                        "real window reverse lock window_id=%s new=%s old=%s",
+                        window_id, best_dir, state.get("direction"),
+                    )
+                    return None
+            elif no_position:
+                state.update({
+                    "side_label": side_label,
+                    "token_id": token_id,
+                    "target_quote": float(target_quote),
+                    "target_shares": float(latest_target_shares),
+                    "remaining_shares": float(latest_target_shares),
+                    "limit_price": float(limit_price),
+                    "locked": False,
+                    "lock_reason": None,
+                })
 
         if state.get("locked") or state.get("unknown_outcome") or state.get("attempt_in_flight"):
             return None
 
         remaining_shares = float(state.get("remaining_shares", 0.0))
-        remaining_quote = remaining_shares * float(state["limit_price"])
-        if remaining_shares + 1e-9 < min_shares or remaining_quote + 1e-9 < float(POLYMARKET_PLATFORM.min_order_quote_usdc):
+        no_fill_count = int(state.get("no_fill_count", 0))
+        if no_fill_count > 0:
+            attempt_shares = remaining_shares if remaining_shares <= min_shares * 2 else min_shares
+        else:
+            attempt_shares = remaining_shares
+        attempt_quote = attempt_shares * float(state["limit_price"])
+        if attempt_shares + 1e-9 < min_shares or attempt_quote + 1e-9 < min_quote:
             state["locked"] = True
             state["lock_reason"] = "dust_remaining"
             return None
@@ -1026,14 +1066,15 @@ class LiveRunner:
         state["attempt_in_flight"] = True
         client_order_id = f"{window_id}:{state['direction']}:fok:{state['attempt_seq']}"
         state["last_client_order_id"] = client_order_id
+        state["last_attempt_shares"] = float(attempt_shares)
         ticket = self.submit_signal_order(
             window_id=window_id,
             side=str(state["side_label"]),
             direction=str(state["direction"]),
-            size_quote_usdc=remaining_quote,
+            size_quote_usdc=attempt_quote,
             limit_price=float(state["limit_price"]),
-            note=note,
-            fixed_size_shares=remaining_shares,
+            note=f"{note} nofill={no_fill_count} chunk_shares={attempt_shares:.4f}",
+            fixed_size_shares=attempt_shares,
             fixed_client_order_id=client_order_id,
         )
         self._apply_real_fok_ticket(state, ticket)
