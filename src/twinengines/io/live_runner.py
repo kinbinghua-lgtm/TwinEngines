@@ -787,7 +787,8 @@ class LiveRunner:
 
         is_reversal = (best_dir != event.get("trigger_direction", ""))
         selected_ask = ask_up if best_dir == "up" else ask_down
-        is_mid_relax = (not is_reversal) and selected_ask is not None and 0.40 <= float(selected_ask) <= 0.79
+        mid_relax_enabled = str(os.environ.get("TE_MIDRANGE_RELAX_ENABLE", "0")).lower() in ("1", "true", "yes", "on")
+        is_mid_relax = mid_relax_enabled and (not is_reversal) and selected_ask is not None and 0.40 <= float(selected_ask) <= 0.79
         relax_tag = "mid_040_079_trend" if is_mid_relax else ""
         if is_mid_relax:
             _SIM_CURRENT["relax_tag"] = relax_tag
