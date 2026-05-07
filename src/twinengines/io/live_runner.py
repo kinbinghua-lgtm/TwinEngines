@@ -54,6 +54,7 @@ from .market_resolver import ActiveMarket, MarketResolver, MarketResolverCfg
 from .polymarket_client import OrderState, OrderTicket, PolymarketClient
 from .polymarket_feed import PolymarketFeed, PolymarketFeedCfg
 from .position_lock import PositionLock
+from .position_exit_guard import PositionExitGuard
 from .reconciliation import LocalPosition, Reconciler, ReconcilerCfg
 from ..risk.sizing import SizingCfg, stake_for_trade
 from .shadow_signal_enrich import enrich_shadow_event_with_polymarket
@@ -97,6 +98,7 @@ class LiveRunner:
     market_resolver: Optional[MarketResolver] = None
     poly_client: Optional[PolymarketClient] = None
     position_lock: Optional[PositionLock] = None
+    exit_guard: Optional[PositionExitGuard] = None
     reconciler: Optional[Reconciler] = None
     alerting: Optional[AlertingDispatcher] = None
     store: Optional[StateStore] = None
@@ -262,6 +264,7 @@ class LiveRunner:
 
         # position lock
         self.position_lock = PositionLock(store=self.store)
+        self.exit_guard = PositionExitGuard(client=self.poly_client, store=self.store) if self.poly_client is not None else None
 
         # market resolver
         self.market_resolver = MarketResolver(
@@ -368,6 +371,8 @@ class LiveRunner:
         try:
             while not self._stopping.is_set():
                 time.sleep(1.0)
+                if self.exit_guard is not None and self.cfg.runtime.enable_real_orders:
+                    self.exit_guard.check_once()
                 if self.poly_client and self.cfg.runtime.enable_real_orders:
                     self._write_real_balance()
         finally:
@@ -955,7 +960,7 @@ class LiveRunner:
             state["locked"] = True
             state["lock_reason"] = "target_filled"
             return
-        if matched > 1e-9 and (float(state["remaining_shares"]) < min_shares or remaining_quote < min_quote):
+        if matched > 1e-9 and remaining_quote < min_quote:
             state["locked"] = True
             state["lock_reason"] = "dust_remaining"
             return
@@ -992,7 +997,7 @@ class LiveRunner:
         min_shares = float(POLYMARKET_PLATFORM.min_limit_order_shares)
         min_quote = float(POLYMARKET_PLATFORM.min_order_quote_usdc)
         latest_target_shares = float(target_quote) / max(float(limit_price), 0.01)
-        if latest_target_shares + 1e-9 < min_shares:
+        if state is None and latest_target_shares + 1e-9 < min_shares:
             logger.info("real window skip below min shares window_id=%s shares=%.4f", window_id, latest_target_shares)
             return None
 
@@ -1027,13 +1032,13 @@ class LiveRunner:
                         "real window direction refreshed after no-fill/no-position window_id=%s new=%s old=%s",
                         window_id, best_dir, state.get("direction"),
                     )
+                    target_quote_locked = float(state.get("target_quote", target_quote))
+                    latest_target_shares = target_quote_locked / max(float(limit_price), 0.01)
                     state.update({
                         "direction": best_dir,
                         "side_label": side_label,
                         "token_id": token_id,
-                        "target_quote": float(target_quote),
-                        "spent_quote": 0.0,
-                        "remaining_quote": float(target_quote),
+                        "remaining_quote": target_quote_locked,
                         "target_shares": float(latest_target_shares),
                         "remaining_shares": float(latest_target_shares),
                         "limit_price": float(limit_price),
@@ -1049,12 +1054,12 @@ class LiveRunner:
                     )
                     return None
             elif no_position:
+                target_quote_locked = float(state.get("target_quote", target_quote))
+                latest_target_shares = target_quote_locked / max(float(limit_price), 0.01)
                 state.update({
                     "side_label": side_label,
                     "token_id": token_id,
-                    "target_quote": float(target_quote),
-                    "spent_quote": 0.0,
-                    "remaining_quote": float(target_quote),
+                    "remaining_quote": target_quote_locked,
                     "target_shares": float(latest_target_shares),
                     "remaining_shares": float(latest_target_shares),
                     "limit_price": float(limit_price),
@@ -1063,12 +1068,11 @@ class LiveRunner:
                 })
             else:
                 spent_quote = max(0.0, float(state.get("spent_quote", 0.0)))
-                total_quote = max(float(state.get("target_quote", 0.0)), float(target_quote))
+                total_quote = float(state.get("target_quote", target_quote))
                 remaining_quote = max(0.0, total_quote - spent_quote)
                 state.update({
                     "side_label": side_label,
                     "token_id": token_id,
-                    "target_quote": total_quote,
                     "remaining_quote": remaining_quote,
                     "target_shares": float(state.get("filled_shares", 0.0)) + remaining_quote / max(float(limit_price), 0.01),
                     "remaining_shares": remaining_quote / max(float(limit_price), 0.01),
@@ -1087,9 +1091,13 @@ class LiveRunner:
         else:
             attempt_shares = remaining_shares
         attempt_quote = attempt_shares * float(state["limit_price"])
-        if attempt_shares + 1e-9 < min_shares or attempt_quote + 1e-9 < min_quote:
+        if attempt_quote + 1e-9 < min_quote:
             state["locked"] = True
             state["lock_reason"] = "dust_remaining"
+            return None
+        if attempt_shares + 1e-9 < min_shares:
+            state["last_error"] = "waiting_min_shares_at_current_price"
+            state["last_wait_price"] = float(state["limit_price"])
             return None
 
         state["attempt_seq"] = int(state.get("attempt_seq", 0)) + 1
@@ -1522,6 +1530,22 @@ class LiveRunner:
                         "client_order_id": client_order_id,
                         "ref_limit_price": float(limit_price),
                     })
+                if self.exit_guard is not None:
+                    try:
+                        active_market = self.market_resolver.get_active() if self.market_resolver is not None else None
+                        market_end_ts_ms = int(active_market.end_ts_ms) if active_market is not None else int(time.time() * 1000)
+                        self.exit_guard.register_entry(
+                            window_id=window_id,
+                            direction=direction,
+                            token_id=token_id,
+                            entry_price=float(ticket.price),
+                            entry_cost_usdc=float(ticket.size_quote_usdc),
+                            entry_shares=float(ticket.filled_size_shares or ticket.size_shares or 0.0),
+                            market_end_ts_ms=market_end_ts_ms,
+                            client_order_id=client_order_id,
+                        )
+                    except Exception as e:
+                        logger.warning("exit_guard register_entry failed window_id=%s err=%s", window_id, e)
                 if self.alerting is not None:
                     self.alerting.alert("info", "order_filled", {
                         "window_id": window_id,

@@ -399,6 +399,37 @@ class PolymarketClient:
         out["error"] = str(last_err) if last_err else "unknown"
         return out
 
+    def fetch_book_depth(self, token_id: str, *, max_levels: int = 20) -> dict[str, Any]:
+        out = self.fetch_book(token_id)
+        out["bids"] = []
+        out["asks"] = []
+        url = (
+            f"{self.platform.clob_host}/book"
+            f"?token_id={urllib.parse.quote(token_id)}&_={int(time.time() * 1000)}"
+        )
+        try:
+            data = _http_get_json(
+                url,
+                timeout=self.runtime_cfg.http_timeout_sec,
+                user_agent=self.runtime_cfg.http_user_agent,
+            )
+            bids = data.get("bids", []) if isinstance(data, dict) else []
+            asks = data.get("asks", []) if isinstance(data, dict) else []
+            out["bids"] = sorted(bids, key=lambda x: float(x.get("price") or 0), reverse=True)[:max(1, int(max_levels))]
+            out["asks"] = sorted(asks, key=lambda x: float(x.get("price") or 1))[:max(1, int(max_levels))]
+            if out["bids"]:
+                out["best_bid"] = float(out["bids"][0].get("price") or 0)
+                out["best_bid_size"] = float(out["bids"][0].get("size") or 0)
+            if out["asks"]:
+                out["best_ask"] = float(out["asks"][0].get("price") or 0)
+                out["best_ask_size"] = float(out["asks"][0].get("size") or 0)
+            out["stale"] = False
+            out["source"] = "rest_depth"
+        except Exception as e:
+            out["stale"] = True
+            out["error"] = str(e)
+        return out
+
     # ---------------- 账户 (链上) ----------------
 
     _USDC_ABI = [
