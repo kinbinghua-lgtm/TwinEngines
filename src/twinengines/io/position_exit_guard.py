@@ -30,6 +30,7 @@ class ExitPosition:
     last_exit_ts_ms: int = 0
     last_reason: Optional[str] = None
     max_adverse_prob_seen: float = 0.0
+    max_held_prob_seen: float = 0.0
     last_p_up: Optional[float] = None
     last_p_down: Optional[float] = None
     strong_reverse_triggered: bool = False
@@ -38,10 +39,12 @@ class ExitPosition:
 @dataclass
 class PositionExitGuardCfg:
     enabled: bool = True
-    take_profit_multiple: float = 2.0
     check_interval_sec: float = 1.0
     min_exit_quote_usdc: float = 1.0
     adverse_prob_epsilon: float = 1e-6
+    held_prob_drawdown_exit: float = 0.18
+    min_held_prob_exit: float = 0.52
+    last_seconds_exit_sec: float = 20.0
 
 
 class PositionExitGuard:
@@ -94,8 +97,11 @@ class PositionExitGuard:
             pos.last_p_down = float(p_down)
             adverse_dir = "down" if pos.direction == "up" else "up"
             adverse_prob = float(p_down if adverse_dir == "down" else p_up)
+            held_prob = float(p_up if pos.direction == "up" else p_down)
             if adverse_prob > float(pos.max_adverse_prob_seen or 0.0):
                 pos.max_adverse_prob_seen = adverse_prob
+            if held_prob > float(pos.max_held_prob_seen or 0.0):
+                pos.max_held_prob_seen = held_prob
             self._persist_positions()
 
     def observe_signal(self, *, window_id: str, best_dir: str, p_up: float, p_down: float, ts_ms: Optional[int] = None) -> None:
@@ -112,21 +118,35 @@ class PositionExitGuard:
             adverse_dir = "down" if pos.direction == "up" else "up"
             adverse_prob = float(p_down if adverse_dir == "down" else p_up)
             previous_max = float(pos.max_adverse_prob_seen or 0.0)
-            is_current_extreme = adverse_prob >= previous_max - float(self.cfg.adverse_prob_epsilon)
+            held_prob = float(p_up if pos.direction == "up" else p_down)
+            previous_held_max = float(pos.max_held_prob_seen or 0.0)
             if adverse_prob > previous_max:
                 pos.max_adverse_prob_seen = adverse_prob
-            if signal_dir == adverse_dir and is_current_extreme and not pos.strong_reverse_triggered:
+            if held_prob > previous_held_max:
+                pos.max_held_prob_seen = held_prob
+            if adverse_prob >= 0.58 and (adverse_prob - held_prob) >= 0.10 and not pos.strong_reverse_triggered:
                 pos.strong_reverse_triggered = True
-                pos.last_reason = "prob_extreme_reverse"
-                self._audit("exit_guard_prob_extreme_reverse", pos, {
+                pos.last_reason = "direction_probability_reversed"
+                self._audit("exit_guard_direction_probability_reversed", pos, {
                     "signal_dir": signal_dir,
                     "p_up": round(float(p_up), 4),
                     "p_down": round(float(p_down), 4),
+                    "held_prob": round(held_prob, 4),
                     "adverse_prob": round(adverse_prob, 4),
-                    "max_adverse_prob_seen": round(max(previous_max, adverse_prob), 4),
                     "ts_ms": int(ts_ms or time.time() * 1000),
                 })
-                self._exit_5share_loop(pos, reason="prob_extreme_reverse", require_2x=False)
+                self._exit_5share_loop(pos, reason="direction_probability_reversed")
+            elif previous_held_max > 0 and held_prob <= previous_held_max - float(self.cfg.held_prob_drawdown_exit) and held_prob < 0.62:
+                pos.last_reason = "held_probability_decay"
+                self._audit("exit_guard_held_probability_decay", pos, {
+                    "signal_dir": signal_dir,
+                    "p_up": round(float(p_up), 4),
+                    "p_down": round(float(p_down), 4),
+                    "held_prob": round(held_prob, 4),
+                    "max_held_prob_seen": round(previous_held_max, 4),
+                    "ts_ms": int(ts_ms or time.time() * 1000),
+                })
+                self._exit_5share_loop(pos, reason="held_probability_decay")
             self._persist_positions()
 
     def check_once(self) -> None:
@@ -194,12 +214,20 @@ class PositionExitGuard:
             pos.last_reason = "book_stale"
             return
         best_bid = float(book.get("best_bid") or 0.0)
-        if best_bid + 1e-12 < float(pos.entry_price) * float(self.cfg.take_profit_multiple):
-            pos.last_reason = "hold_below_2x"
+        seconds_left = (int(pos.market_end_ts_ms) - int(now_ms)) / 1000.0
+        held_prob = self._held_probability(pos)
+        if seconds_left <= float(self.cfg.last_seconds_exit_sec) and held_prob is not None and held_prob < float(self.cfg.min_held_prob_exit):
+            pos.last_reason = "last_seconds_weak_probability"
+            self._audit("exit_guard_last_seconds_weak_probability", pos, {
+                "seconds_left": round(seconds_left, 2),
+                "held_prob": round(float(held_prob), 4),
+                "best_bid": round(best_bid, 4),
+            })
+            self._exit_5share_loop(pos, reason="last_seconds_weak_probability")
             return
-        self._exit_5share_loop(pos, reason="2x_5share", require_2x=True)
+        pos.last_reason = "hold_direction_probability"
 
-    def _exit_5share_loop(self, pos: ExitPosition, *, reason: str, require_2x: bool) -> None:
+    def _exit_5share_loop(self, pos: ExitPosition, *, reason: str) -> None:
         min_shares = float(POLYMARKET_PLATFORM.min_limit_order_shares)
         sold_any = False
         while pos.remaining_shares + 1e-9 >= min_shares:
@@ -208,9 +236,6 @@ class PositionExitGuard:
                 pos.last_reason = "exit_book_stale"
                 break
             bid = float(book.get("best_bid") or 0.0)
-            if require_2x and bid + 1e-12 < float(pos.entry_price) * float(self.cfg.take_profit_multiple):
-                pos.last_reason = "exit_bid_below_2x"
-                break
             if bid <= 0:
                 pos.last_reason = "exit_no_best_bid"
                 break
@@ -238,12 +263,20 @@ class PositionExitGuard:
             self._audit("exit_guard_closed", pos, {"reason": "fully_or_dust_exited"})
 
     @staticmethod
+    def _held_probability(pos: ExitPosition) -> Optional[float]:
+        if pos.direction == "up":
+            return pos.last_p_up
+        if pos.direction == "down":
+            return pos.last_p_down
+        return None
+
+    @staticmethod
     def _key(window_id: str, token_id: str) -> str:
         return f"{window_id}:{token_id}"
 
     def _audit(self, kind: str, pos: ExitPosition, extra: dict[str, Any]) -> None:
         if self.store is None:
             return
-        payload = {"window_id": pos.window_id, "direction": pos.direction, "token_id_suffix": pos.token_id[-12:], "entry_price": round(pos.entry_price, 4), "entry_cost_usdc": round(pos.entry_cost_usdc, 2), "entry_shares": round(pos.entry_shares, 4), "remaining_shares": round(pos.remaining_shares, 4), "max_adverse_prob_seen": round(float(pos.max_adverse_prob_seen or 0.0), 4), "last_p_up": pos.last_p_up, "last_p_down": pos.last_p_down, "last_reason": pos.last_reason}
+        payload = {"window_id": pos.window_id, "direction": pos.direction, "token_id_suffix": pos.token_id[-12:], "entry_price": round(pos.entry_price, 4), "entry_cost_usdc": round(pos.entry_cost_usdc, 2), "entry_shares": round(pos.entry_shares, 4), "remaining_shares": round(pos.remaining_shares, 4), "max_adverse_prob_seen": round(float(pos.max_adverse_prob_seen or 0.0), 4), "max_held_prob_seen": round(float(pos.max_held_prob_seen or 0.0), 4), "last_p_up": pos.last_p_up, "last_p_down": pos.last_p_down, "last_reason": pos.last_reason}
         payload.update(extra)
         self.store.append_audit(kind, payload)

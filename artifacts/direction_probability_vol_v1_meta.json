@@ -1,0 +1,21 @@
+{
+  "semantic": "continuous probability model with realized volatility features, train150 valid30, 5-second sampling",
+  "model": "HistGradientBoostingClassifier + isotonic calibration cv=3",
+  "obs_step_sec": 5,
+  "train_start": "2025-11-08",
+  "train_end": "2026-04-06",
+  "valid_start": "2026-04-07",
+  "valid_end": "2026-05-06",
+  "train_samples": 1036800,
+  "train_windows": 43200,
+  "valid_samples": 207360,
+  "valid_windows": 8640,
+  "feature_count": 46,
+  "train_up_rate": 0.4985185185185185,
+  "valid_up_rate": 0.5052083333333334,
+  "valid_brier": 0.11838879315818132,
+  "valid_logloss": 0.37207577698039446,
+  "valid_direction_accuracy": 0.8362027391975309,
+  "valid_mean_abs_calibration_error": 0.012898751472205209,
+  "valid_crossed_open_rate": 0.1368971836419753
+}

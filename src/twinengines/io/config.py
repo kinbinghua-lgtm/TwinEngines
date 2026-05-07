@@ -149,12 +149,6 @@ class PolymarketRuntimeCfg:
     auto_redeem_enabled: bool = True
     auto_redeem_interval_sec: float = 30.0
     auto_redeem_receipt_wait_sec: float = 20.0
-    # p_rev 时间分桶校准 (最小可用版)
-    enable_p_rev_time_calibration: bool = True
-    p_rev_calibration_bucket_sec: int = 10
-    p_rev_calibration_min_samples: int = 8
-    p_rev_calibration_window_hours: float = 168.0
-    p_rev_calibration_path: str = "data_runtime/p_rev_time_calibration.json"
 
 
 def _env(key: str, default: Optional[str] = None) -> Optional[str]:
@@ -256,12 +250,6 @@ def load_polymarket_runtime_cfg(env_file: Optional[str] = None) -> PolymarketRun
         auto_redeem_enabled=_env_bool("AUTO_REDEEM_ENABLED", False),
         auto_redeem_interval_sec=_env_float("AUTO_REDEEM_INTERVAL_SEC", 30.0),
         auto_redeem_receipt_wait_sec=_env_float("AUTO_REDEEM_RECEIPT_WAIT_SEC", 20.0),
-        enable_p_rev_time_calibration=_env_bool("ENABLE_P_REV_TIME_CALIBRATION", True),
-        p_rev_calibration_bucket_sec=_env_int("P_REV_CALIBRATION_BUCKET_SEC", 10),
-        p_rev_calibration_min_samples=_env_int("P_REV_CALIBRATION_MIN_SAMPLES", 8),
-        p_rev_calibration_window_hours=_env_float("P_REV_CALIBRATION_WINDOW_HOURS", 168.0),
-        p_rev_calibration_path=_env("P_REV_CALIBRATION_PATH", "data_runtime/p_rev_time_calibration.json")
-        or "data_runtime/p_rev_time_calibration.json",
     )
     return cfg
 

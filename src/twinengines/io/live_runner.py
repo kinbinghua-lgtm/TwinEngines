@@ -69,6 +69,7 @@ _SIM_FILLED: set[str] = set()        # 影子盘窗口锁仓
 _REAL_WINDOW_ORDERS: dict[str, dict[str, Any]] = {}  # 实盘窗口级 FOK 状态机
 _SIM_CURRENT: dict = {}
 _SIM_WIN_BUDGET: dict[str, float] = {}  # 影子盘每窗口剩余 Kelly 预算
+_SIM_WIN_TARGET: dict[str, float] = {}  # 影子盘每窗口当前目标仓位
 _SIM_WIN_DIR: dict[str, str] = {}       # 影子盘每窗口首次成交方向
 _REAL_RETRYABLE_STATES = {OrderState.REJECTED, OrderState.CANCELLED, OrderState.TIMEOUT}
 _REAL_UNKNOWN_ERRORS = ("unknown", "timeout", "query_failed", "post_order_exception")
@@ -84,8 +85,6 @@ class LiveRunnerCfg:
     record_shadow_signals: bool = False
     artifact_path: Optional[str] = None
     shadow_signal_log_path: str = "logs/shadow_signals.jsonl"
-    disable_trend: bool = False
-    disable_reversal: Optional[bool] = None
 
 @dataclass
 class LiveRunner:
@@ -136,8 +135,6 @@ class LiveRunner:
         record_shadow_signals: bool = False,
         artifact_path: Optional[str] = None,
         shadow_signal_log_path: str = "logs/shadow_signals.jsonl",
-        disable_trend: bool = False,
-        disable_reversal: Optional[bool] = None,
     ) -> "LiveRunner":
         runtime = load_polymarket_runtime_cfg(env_file=env_file)
         cfg = LiveRunnerCfg(
@@ -147,8 +144,6 @@ class LiveRunner:
             record_shadow_signals=bool(record_shadow_signals),
             artifact_path=artifact_path,
             shadow_signal_log_path=shadow_signal_log_path,
-            disable_trend=bool(disable_trend),
-            disable_reversal=disable_reversal,
         )
         return cls(cfg=cfg)
 
@@ -391,8 +386,8 @@ class LiveRunner:
             bal = self.poly_client.fetch_account_equity_usdc() or 0
             data = {"ok": True, "balance_usdc": round(bal, 2),
                     "pending_redeem": 0, "redeem_ok": self.poly_client.is_healthy()}
-            os.makedirs("/root/TwinEngines/data_runtime", exist_ok=True)
-            open("/root/TwinEngines/data_runtime/real_balance.json", "w").write(
+            os.makedirs(self._runtime_path("data_runtime"), exist_ok=True)
+            open(self._runtime_path("data_runtime", "real_balance.json"), "w", encoding="utf-8").write(
                 json.dumps(data))
         except Exception:
             pass
@@ -445,15 +440,14 @@ class LiveRunner:
     # ---------------- 空跑信号引擎 ----------------
 
     def _init_shadow_signal_engine(self) -> None:
-        global _sim_equity
         # 启动时从文件恢复权益（避免重启重置为 $20）
         try:
-            eq_path = "/root/TwinEngines/data_runtime/sim_equity.txt"
+            eq_path = self._runtime_path("data_runtime", "sim_equity.txt")
             if os.path.exists(eq_path):
-                saved = float(open(eq_path).read().strip())
+                saved = float(open(eq_path, encoding="utf-8").read().strip())
                 if saved > 0:
-                    _sim_equity = saved
-                    logger.info("_sim_equity restored from file: %.2f", _sim_equity)
+                    self._sim_equity = saved
+                    logger.info("_sim_equity restored from file: %.2f", self._sim_equity)
         except Exception:
             pass
 
@@ -470,8 +464,6 @@ class LiveRunner:
             engine = ShadowSignalEngine.from_artifact(
                 artifact_path=artifact,
                 jsonl_path=self.cfg.shadow_signal_log_path,
-                disable_trend=bool(self.cfg.disable_trend),
-                disable_reversal=self.cfg.disable_reversal,
             )
         except Exception as e:
             logger.exception("ShadowSignalEngine init failed: %s", e)
@@ -505,18 +497,8 @@ class LiveRunner:
             "ts_ms": int(time.time() * 1000),
             "artifact_path": artifact_path,
             "artifact_sha256": self._safe_sha256(artifact_path),
-            "disable_trend": bool(engine.cfg.disable_trend),
-            "disable_reversal": bool(engine.cfg.disable_reversal),
-            "baseline_reversal_prob": float(engine.baseline_reversal_prob),
-            "thresholds": {
-                "trend_reversal_prob_max": float(engine.thresholds.trend_reversal_prob_max),
-                "trend_signal_stability_sec_min": int(engine.thresholds.trend_signal_stability_sec_min),
-                "reversal_baseline_offset_min": float(engine.thresholds.reversal_baseline_offset_min),
-                "reversal_signal_stability_sec_min": int(engine.thresholds.reversal_signal_stability_sec_min),
-                "reversal_prob_min": float(engine.thresholds.reversal_prob_min),
-                "reversal_edge_vs_baseline_min": float(engine.thresholds.reversal_edge_vs_baseline_min),
-                "trend_min_expected_value": float(engine.thresholds.trend_min_expected_value),
-            },
+            "model_version": getattr(engine.direction_model, "model_version", "direction_probability"),
+            "semantic": "final_direction_probability",
         }
         logger.info("Runtime effective snapshot: %s", snapshot)
         if self.store is not None:
@@ -533,10 +515,11 @@ class LiveRunner:
 
     def _on_shadow_window_close(self, window_id: str) -> None:
         """窗口关闭时结算影子盘和真实盘。"""
-        global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR
+        global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR, _SIM_WIN_TARGET
         _SIM_FILLED.discard(window_id)
         _REAL_WINDOW_ORDERS.pop(window_id, None)
         _SIM_WIN_BUDGET.pop(window_id, None)
+        _SIM_WIN_TARGET.pop(window_id, None)
         _SIM_WIN_DIR.pop(window_id, None)
         _SIM_CURRENT.clear()
         
@@ -558,7 +541,7 @@ class LiveRunner:
 
     def _settle_shadow(self, window_id, seq, actual_dir, ws, _j, _o):
         fills = []
-        p = "/root/TwinEngines/logs/shadow_orders.jsonl"
+        p = self._runtime_path("logs", "shadow_orders.jsonl")
         if not _o.path.exists(p):
             return
         for line in open(p).readlines()[-500:]:
@@ -592,7 +575,7 @@ class LiveRunner:
         avg_ask = sum(f[0] * f[1] for f in fills) / total_fill if total_fill > 0 else 0
         last_eq = self._sim_equity
         try:
-            p2 = "/root/TwinEngines/logs/window_results.jsonl"
+            p2 = self._runtime_path("logs", "window_results.jsonl")
             if _o.path.exists(p2):
                 for tail_line in reversed(open(p2, "r").readlines()[-20:]):
                     tl = _j.loads(tail_line.strip())
@@ -609,16 +592,17 @@ class LiveRunner:
             "ask": round(avg_ask, 4), "fill_amt": round(total_fill, 2),
             "fill_sec": first_sec, "partials": len(fills), "mode": "shadow",
         })
-        self._append_jsonl("/root/TwinEngines/logs/window_results.jsonl", res)
+        self._append_jsonl(self._runtime_path("logs", "window_results.jsonl"), res)
         try:
-            open("/root/TwinEngines/data_runtime/sim_equity.txt", "w").write(str(round(self._sim_equity, 2)) + chr(10))
+            _o.makedirs(self._runtime_path("data_runtime"), exist_ok=True)
+            open(self._runtime_path("data_runtime", "sim_equity.txt"), "w").write(str(round(self._sim_equity, 2)) + chr(10))
         except Exception:
             pass
 
     def _settle_real(self, window_id, seq, actual_dir, ws, _j, _o, _sql):
         if not self.cfg.runtime.enable_real_orders:
             return
-        db_path = "/root/TwinEngines/data_runtime/state.sqlite"
+        db_path = self._runtime_path("data_runtime", "state.sqlite")
         if not _o.path.exists(db_path):
             return
         fills = []
@@ -660,7 +644,7 @@ class LiveRunner:
         avg_ask = sum(f[0] * f[1] for f in fills) / total_fill if total_fill > 0 else 0
         real_equity = 0.0
         try:
-            bal_file = "/root/TwinEngines/data_runtime/real_balance.json"
+            bal_file = self._runtime_path("data_runtime", "real_balance.json")
             if _o.path.exists(bal_file):
                 bal = _j.loads(open(bal_file).read())
                 real_equity = float(bal.get("balance_usdc") or 0)
@@ -673,10 +657,11 @@ class LiveRunner:
             "ask": round(avg_ask, 4), "fill_amt": round(total_fill, 2),
             "fill_sec": first_sec, "partials": len(fills), "mode": "real",
         })
-        self._append_jsonl("/root/TwinEngines/logs/real_results.jsonl", res)
+        self._append_jsonl(self._runtime_path("logs", "real_results.jsonl"), res)
 
     @staticmethod
     def _append_jsonl(path: str, line: str) -> None:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path, "ab+") as f:
             f.seek(0, 2)
             if f.tell() > 0:
@@ -700,8 +685,8 @@ class LiveRunner:
     def _write_current_window_snapshot(self) -> None:
         try:
             import json as _j, os as _o
-            _o.makedirs("/root/TwinEngines/data_runtime", exist_ok=True)
-            with open("/root/TwinEngines/data_runtime/current_window.json", "w") as _cw:
+            _o.makedirs(self._runtime_path("data_runtime"), exist_ok=True)
+            with open(self._runtime_path("data_runtime", "current_window.json"), "w") as _cw:
                 _cw.write(_j.dumps(_SIM_CURRENT, default=str))
         except Exception:
             pass
@@ -715,7 +700,7 @@ class LiveRunner:
 
     def _simulate_order_from_signal(self, event: dict) -> None:
         global _SIM_FILLED, _SIM_CURRENT
-        global _SIM_WIN_BUDGET, _SIM_WIN_DIR
+        global _SIM_WIN_BUDGET, _SIM_WIN_DIR, _SIM_WIN_TARGET
         window_id = str(event.get("window_id") or "")
         # 真实盘是否活跃
         is_real_mode = (not self.cfg.dry_run_signals
@@ -723,50 +708,50 @@ class LiveRunner:
                         and self.cfg.runtime.enable_real_orders)
         filled_set = _SIM_FILLED   # 影子盘锁仓
         win_budget = _SIM_WIN_BUDGET  # 影子盘预算
+        win_target = _SIM_WIN_TARGET  # 影子盘目标仓位
         win_dir = _SIM_WIN_DIR     # 影子盘方向
-        p_rev = float(event.get("p_rev_lower") or event.get("p_rev") or 0.3)
+        p_up = float(event.get("p_up") or 0.5)
+        p_down = float(event.get("p_down") or (1.0 - p_up))
+        p_up = max(0.0, min(1.0, p_up))
+        p_down = max(0.0, min(1.0, p_down))
+        norm = p_up + p_down
+        if norm > 0:
+            p_up, p_down = p_up / norm, p_down / norm
         t_rem = float(event.get("t_remaining_sec") or 0)
         trig = event.get("trigger_pattern", "")
-        p_adj = float(event.get("p_rev") or 0.3)
+        p_adj = max(p_up, p_down)
         d_abs = float(event.get("d_abs_pct") or 0)
-        td = event.get("trigger_direction", "")
-        if td == "up":
-            p_up = 1.0 - float(p_rev)
-            p_down = float(p_rev)
-        elif td == "down":
-            p_up = float(p_rev)
-            p_down = 1.0 - float(p_rev)
-        else:
-            p_up = 0.5
-            p_down = 0.5
+        d_signed = float(event.get("d_signed_pct") or 0)
+        best_prob_dir = "up" if p_up >= p_down else "down"
         if self.exit_guard is not None and is_real_mode and window_id:
             try:
                 self.exit_guard.observe_probability(window_id=window_id, p_up=p_up, p_down=p_down)
             except Exception as e:
                 logger.debug("exit_guard observe_probability failed window_id=%s err=%s", window_id, e)
 
-        PREFIX_D_CLIFF = {"000":0.0284,"001":0.0169,"010":0.0187,"011":0.0228,
-                          "100":0.0232,"101":0.0191,"110":0.0172,"111":0.0317}
-        PREFIX_P_MIN  = {"000":0.344,"001":0.427,"010":0.386,"011":0.377,
-                          "100":0.383,"101":0.420,"110":0.442,"111":0.345}
+        min_side_prob = 0.55
+        min_edge = 0.055
+        min_ev = 0.08
+        min_kelly_raw = 0.08
+        min_entry_t_rem = 15.0
         key = trig[:3] if len(trig) >= 3 else ""
-        d_cliff = PREFIX_D_CLIFF.get(key, 0.03)
-        p_min_r = PREFIX_P_MIN.get(key, 0.25)
 
         # 基础状态更新
         _SIM_CURRENT.update({"window_id": window_id, "prefix": trig, "T": round(t_rem, 0),
-                             "p_adj": round(p_adj, 3), "p_lower": round(p_rev, 3),
-                             "d_abs": round(d_abs, 4), "td": td,
-                             "d_cliff": d_cliff, "p_min_r": p_min_r})
+                             "p_up": round(p_up, 3), "p_down": round(p_down, 3),
+                             "best_prob_dir": best_prob_dir,
+                             "d_signed": round(d_signed, 4), "d_abs": round(d_abs, 4),
+                             "min_side_prob": min_side_prob, "min_edge": min_edge,
+                             "min_ev": min_ev, "min_kelly_raw": min_kelly_raw})
         try:
             import json as _j, os as _o
-            _o.makedirs("/root/TwinEngines/data_runtime", exist_ok=True)
-            with open("/root/TwinEngines/data_runtime/current_window.json", "w") as _cw:
+            _o.makedirs(self._runtime_path("data_runtime"), exist_ok=True)
+            with open(self._runtime_path("data_runtime", "current_window.json"), "w") as _cw:
                 _cw.write(_j.dumps(_SIM_CURRENT, default=str))
         except: pass
 
-        if not window_id or t_rem < 5:
-            _SIM_CURRENT["status"] = "T<5s"; self._write_current_window_snapshot(); return
+        if not window_id or t_rem < min_entry_t_rem:
+            _SIM_CURRENT["status"] = f"T<{min_entry_t_rem:.0f}s"; self._write_current_window_snapshot(); return
 
         # 预填两个方向的 EV
         try:
@@ -775,18 +760,21 @@ class LiveRunner:
             ask_up, ask_down = None, None
         _SIM_CURRENT["ask_up"] = ask_up; _SIM_CURRENT["ask_down"] = ask_down
         if ask_up is not None and ask_down is not None:
-            if td == "up":
-                _SIM_CURRENT["ev_rev"] = round(self._calc_ev(p_rev, ask_down), 4)
-                _SIM_CURRENT["ev_trend"] = round(self._calc_ev(1 - p_rev, ask_up), 4)
-                _SIM_CURRENT["r_d_ok"] = (d_abs <= d_cliff)
-                _SIM_CURRENT["r_p_ok"] = (p_rev >= p_min_r)
-            else:
-                _SIM_CURRENT["ev_rev"] = round(self._calc_ev(p_rev, ask_up), 4)
-                _SIM_CURRENT["ev_trend"] = round(self._calc_ev(1 - p_rev, ask_down), 4)
-                _SIM_CURRENT["r_d_ok"] = (d_abs <= d_cliff)
-                _SIM_CURRENT["r_p_ok"] = (p_rev >= p_min_r)
+            ev_up_simple = self._calc_ev(p_up, ask_up)
+            ev_down_simple = self._calc_ev(p_down, ask_down)
+            edge_up = p_up - ask_up
+            edge_down = p_down - ask_down
+            kelly_up_raw = self._raw_kelly_ratio(p_up, ask_up)
+            kelly_down_raw = self._raw_kelly_ratio(p_down, ask_down)
+            _SIM_CURRENT["ev_up"] = round(ev_up_simple, 4)
+            _SIM_CURRENT["ev_down"] = round(ev_down_simple, 4)
+            _SIM_CURRENT["edge_up"] = round(edge_up, 4)
+            _SIM_CURRENT["edge_down"] = round(edge_down, 4)
+            _SIM_CURRENT["kelly_up_raw"] = round(kelly_up_raw, 4)
+            _SIM_CURRENT["kelly_down_raw"] = round(kelly_down_raw, 4)
+            _SIM_CURRENT["up_prob_ok"] = (p_up >= min_side_prob)
+            _SIM_CURRENT["down_prob_ok"] = (p_down >= min_side_prob)
 
-        ev_min = 0.05 if t_rem > 80 else (0.03 if t_rem > 30 else 0.02)
         try:
             best_dir, best_ev, ask_up, ask_down = self._resolve_best_direction_by_ev(event, window_id)
         except:
@@ -795,28 +783,54 @@ class LiveRunner:
         if best_dir is None:
             _SIM_CURRENT["status"] = "EV neg"; self._write_current_window_snapshot(); return
 
-        is_reversal = (best_dir != event.get("trigger_direction", ""))
-        reject_reason = ""
-        if is_reversal:
-            if d_abs > d_cliff:
-                reject_reason = f"R:d>{d_cliff:.3f}"
-            elif p_rev < p_min_r:
-                reject_reason = f"R:p<{p_min_r:.3f}"
-        if reject_reason:
-            _SIM_CURRENT["status"] = reject_reason
-            _SIM_CURRENT["best_dir"] = best_dir
-            self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0, "rejected", reject_reason, d_abs)
-            self._write_current_window_snapshot()
-            return
-
-        if best_ev < ev_min:
-            _SIM_CURRENT["status"] = f"EV<{ev_min}"
-            _SIM_CURRENT["best_dir"] = best_dir
-            self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0, "rejected", f"EV<{ev_min}", d_abs)
-            self._write_current_window_snapshot()
-            return
-
+        best_side_prob = p_up if best_dir == "up" else p_down
         ask = ask_up if best_dir == "up" else ask_down
+        best_edge = best_side_prob - ask
+        best_ev_simple = self._calc_ev(best_side_prob, ask)
+        best_kelly_raw = self._raw_kelly_ratio(best_side_prob, ask)
+        
+        # 动态阈值：高概率放宽 EV 要求，低概率提高 EV 要求
+        req_edge, req_ev, req_kelly_raw = self._direction_min_thresholds(best_side_prob)
+        
+        _SIM_CURRENT["best_dir"] = best_dir
+        _SIM_CURRENT["best_side_prob"] = round(best_side_prob, 4)
+        _SIM_CURRENT["best_edge"] = round(best_edge, 4)
+        _SIM_CURRENT["best_ev"] = round(best_ev_simple, 4)
+        _SIM_CURRENT["best_ev_simple"] = round(best_ev_simple, 4)
+        _SIM_CURRENT["best_kelly_raw"] = round(best_kelly_raw, 4)
+        _SIM_CURRENT["req_edge"] = round(req_edge, 4)
+        _SIM_CURRENT["req_ev"] = round(req_ev, 4)
+        _SIM_CURRENT["req_kelly_raw"] = round(req_kelly_raw, 4)
+        
+        if best_side_prob < min_side_prob:
+            _SIM_CURRENT["status"] = f"p<{min_side_prob:.2f}"
+            self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, 0, "rejected", f"p<{min_side_prob:.2f}", d_abs)
+            self._write_current_window_snapshot()
+            return
+        if best_edge < req_edge:
+            _SIM_CURRENT["status"] = f"edge<{req_edge:.3f}"
+            self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, 0, "rejected", f"edge<{req_edge:.3f}", d_abs)
+            self._write_current_window_snapshot()
+            return
+        if best_ev_simple < req_ev:
+            _SIM_CURRENT["status"] = f"EV<{req_ev:.2f}"
+            self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, 0, "rejected", f"EV<{req_ev:.2f}", d_abs)
+            self._write_current_window_snapshot()
+            return
+        if best_kelly_raw < req_kelly_raw:
+            _SIM_CURRENT["status"] = f"KellyRaw<{req_kelly_raw:.2f}"
+            self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, 0, "rejected", f"KellyRaw<{req_kelly_raw:.2f}", d_abs)
+            self._write_current_window_snapshot()
+            return
+        sizing_fraction, max_stake_ratio, sizing_tier = self._direction_sizing_profile(
+            p_side=best_side_prob,
+            edge=best_edge,
+            ev=best_ev_simple,
+            kelly_raw=best_kelly_raw,
+        )
+        _SIM_CURRENT["sizing_fraction"] = round(sizing_fraction, 4)
+        _SIM_CURRENT["max_stake_ratio"] = round(max_stake_ratio, 4)
+        _SIM_CURRENT["sizing_tier"] = sizing_tier
         if self.exit_guard is not None and is_real_mode and window_id:
             try:
                 self.exit_guard.observe_signal(
@@ -841,8 +855,8 @@ class LiveRunner:
                 if real_equity is None:
                     _SIM_CURRENT["real_status"] = "real_equity_unavailable"
                 else:
-                    real_sizing = SizingCfg(kelly_fraction=0.30, max_stake_ratio=0.15, min_absolute_stake=2.50)
-                    real_wp = p_rev if is_reversal else (1 - p_rev)
+                    real_sizing = SizingCfg(kelly_fraction=sizing_fraction, max_stake_ratio=max_stake_ratio, min_absolute_stake=2.50)
+                    real_wp = best_side_prob
                     real_b = (1 - ask) / ask if ask > 0 else 1
                     real_kelly_total = stake_for_trade(
                         portfolio_equity=float(real_equity),
@@ -851,7 +865,7 @@ class LiveRunner:
                         cfg=real_sizing,
                     )
                     if real_kelly_total < 2.50:
-                        if float(real_equity or 0.0) * 0.15 < 2.50:
+                        if float(real_equity or 0.0) * max_stake_ratio < 2.50:
                             _SIM_CURRENT["real_status"] = "real_Kelly<2.5"
                         else:
                             real_kelly_total = 2.50
@@ -862,7 +876,7 @@ class LiveRunner:
                         active = self.market_resolver.get_active()
                         if active:
                             token_id = active.token_id_yes if best_dir == "up" else active.token_id_no
-                            side_label = "TREND" if not is_reversal else "REVERSAL"
+                            side_label = "DIRECTION"
                             limit_px = round(ask * 1.005 if ask > 0 else ask, 4)
                             self._submit_real_window_fok(
                                 window_id=window_id,
@@ -871,7 +885,8 @@ class LiveRunner:
                                 token_id=token_id,
                                 target_quote=float(real_single),
                                 limit_price=float(limit_px),
-                                note=f"ev={best_ev:.3f} kelly={real_kelly_total:.2f}",
+                                note=f"p={best_side_prob:.3f} edge={best_edge:.3f} ev={best_ev_simple:.3f} kraw={best_kelly_raw:.3f} kelly={real_kelly_total:.2f}",
+                                sizing_tier=sizing_tier,
                             )
                             _SIM_CURRENT["real_status"] = "real_fok_evaluated"
                             _SIM_CURRENT["real_target_quote"] = round(float(real_single), 2)
@@ -879,40 +894,48 @@ class LiveRunner:
                 logger.warning("real window fok submit failed: %s", e)
                 _SIM_CURRENT["real_status"] = "real_submit_error"
 
-        if window_id in filled_set:
-            _SIM_CURRENT["status"] = "filled"; self._write_current_window_snapshot(); return
-
         if window_id in win_dir and best_dir != win_dir[window_id]:
             filled_set.add(window_id)
             _SIM_CURRENT["status"] = "locked_reverse"
             _SIM_CURRENT["best_dir"] = best_dir
-            self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0,
+            self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, 0,
                                    "rejected", f"reverse_lock:{best_dir}vs{win_dir[window_id]}", d_abs)
             self._write_current_window_snapshot()
             return
 
+        try:
+            equity = self._sim_equity
+            sizing = SizingCfg(kelly_fraction=sizing_fraction, max_stake_ratio=max_stake_ratio, min_absolute_stake=2.50)
+            wp = best_side_prob
+            b = (1 - ask) / ask if ask > 0 else 1
+            proposed_target = stake_for_trade(portfolio_equity=equity, win_prob=wp, net_payoff=b, cfg=sizing)
+        except Exception:
+            equity = self._sim_equity
+            proposed_target = 5.0
+        if proposed_target < 2.50:
+            if equity * max_stake_ratio < 2.50:
+                _SIM_CURRENT["status"] = "Kelly<2.5"
+                _SIM_CURRENT["best_dir"] = best_dir
+                self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, 0, "rejected", "Kelly<2.5", d_abs)
+                self._write_current_window_snapshot()
+                return
+            proposed_target = 2.50
+
         if window_id not in win_budget:
-            try:
-                equity = self._sim_equity
-                sizing = SizingCfg(kelly_fraction=0.30, max_stake_ratio=0.15, min_absolute_stake=2.50)
-                wp = p_rev if is_reversal else (1 - p_rev)
-                b = (1 - ask) / ask if ask > 0 else 1
-                kelly_total = stake_for_trade(portfolio_equity=equity, win_prob=wp, net_payoff=b, cfg=sizing)
-            except Exception:
-                equity = self._sim_equity
-                kelly_total = 5.0
-            if kelly_total < 2.50:
-                if equity * 0.15 < 2.50:
-                    _SIM_CURRENT["status"] = "Kelly<2.5"
-                    _SIM_CURRENT["best_dir"] = best_dir
-                    self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, 0, "rejected", "Kelly<2.5", d_abs)
-                    self._write_current_window_snapshot()
-                    return
-                kelly_total = 2.50
-            win_budget[window_id] = kelly_total
+            win_target[window_id] = proposed_target
+            win_budget[window_id] = proposed_target
             win_dir[window_id] = best_dir
+            kelly_total = proposed_target
         else:
-            kelly_total = win_budget[window_id]
+            current_target = float(win_target.get(window_id, win_budget.get(window_id, 0.0)))
+            if best_dir == win_dir.get(window_id) and proposed_target > current_target + 1e-9:
+                delta = proposed_target - current_target
+                win_target[window_id] = proposed_target
+                win_budget[window_id] = float(win_budget.get(window_id, 0.0)) + delta
+                filled_set.discard(window_id)
+                _SIM_CURRENT["target_upgraded"] = True
+                _SIM_CURRENT["target_upgrade_delta"] = round(delta, 2)
+            kelly_total = float(win_target.get(window_id, proposed_target))
 
         remaining = win_budget.get(window_id, 0)
         if remaining <= 0:
@@ -926,7 +949,7 @@ class LiveRunner:
             single = 2.50
 
         win_budget[window_id] = remaining - single
-        self._write_sim_record(window_id, trig, p_adj, p_rev, t_rem, ask_up, ask_down, best_dir, best_ev, single, "filled", "FILLED", d_abs)
+        self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, single, "filled", "FILLED", d_abs)
 
         if win_budget[window_id] <= 0:
             filled_set.add(window_id)
@@ -936,7 +959,9 @@ class LiveRunner:
         _SIM_CURRENT["best_dir"] = best_dir
         _SIM_CURRENT["fill_amt"] = round(single, 2)
         _SIM_CURRENT["fill_ask"] = round(ask, 4)
-        _SIM_CURRENT["fill_ev"] = round(best_ev, 4)
+        _SIM_CURRENT["fill_ev"] = round(best_ev_simple, 4)
+        _SIM_CURRENT["fill_edge"] = round(best_edge, 4)
+        _SIM_CURRENT["fill_kelly_raw"] = round(best_kelly_raw, 4)
         _SIM_CURRENT["budget_remain"] = round(win_budget.get(window_id, 0), 2)
         _SIM_CURRENT["budget_total"] = round(kelly_total, 2)
         self._write_current_window_snapshot()
@@ -1018,6 +1043,7 @@ class LiveRunner:
         target_quote: float,
         limit_price: float,
         note: str,
+        sizing_tier: str = "base",
     ) -> Optional[OrderTicket]:
         state = _REAL_WINDOW_ORDERS.get(window_id)
         min_shares = float(POLYMARKET_PLATFORM.min_limit_order_shares)
@@ -1040,6 +1066,9 @@ class LiveRunner:
                 "filled_shares": 0.0,
                 "remaining_shares": float(latest_target_shares),
                 "limit_price": float(limit_price),
+                "sizing_tier": str(sizing_tier),
+                "max_target_quote_seen": float(target_quote),
+                "target_upgrade_count": 0,
                 "locked": False,
                 "lock_reason": None,
                 "unknown_outcome": False,
@@ -1058,12 +1087,15 @@ class LiveRunner:
                         "real window direction refreshed after no-fill/no-position window_id=%s new=%s old=%s",
                         window_id, best_dir, state.get("direction"),
                     )
-                    target_quote_locked = float(state.get("target_quote", target_quote))
+                    target_quote_locked = max(float(state.get("target_quote", target_quote)), float(target_quote))
                     latest_target_shares = target_quote_locked / max(float(limit_price), 0.01)
                     state.update({
                         "direction": best_dir,
                         "side_label": side_label,
                         "token_id": token_id,
+                        "target_quote": target_quote_locked,
+                        "sizing_tier": str(sizing_tier),
+                        "max_target_quote_seen": target_quote_locked,
                         "remaining_quote": target_quote_locked,
                         "target_shares": float(latest_target_shares),
                         "remaining_shares": float(latest_target_shares),
@@ -1080,11 +1112,14 @@ class LiveRunner:
                     )
                     return None
             elif no_position:
-                target_quote_locked = float(state.get("target_quote", target_quote))
+                target_quote_locked = max(float(state.get("target_quote", target_quote)), float(target_quote))
                 latest_target_shares = target_quote_locked / max(float(limit_price), 0.01)
                 state.update({
                     "side_label": side_label,
                     "token_id": token_id,
+                    "target_quote": target_quote_locked,
+                    "sizing_tier": str(sizing_tier),
+                    "max_target_quote_seen": target_quote_locked,
                     "remaining_quote": target_quote_locked,
                     "target_shares": float(latest_target_shares),
                     "remaining_shares": float(latest_target_shares),
@@ -1094,11 +1129,16 @@ class LiveRunner:
                 })
             else:
                 spent_quote = max(0.0, float(state.get("spent_quote", 0.0)))
-                total_quote = float(state.get("target_quote", target_quote))
+                total_quote = max(float(state.get("target_quote", target_quote)), float(target_quote))
+                if total_quote > float(state.get("target_quote", 0.0)) + 1e-9:
+                    state["target_upgrade_count"] = int(state.get("target_upgrade_count", 0)) + 1
                 remaining_quote = max(0.0, total_quote - spent_quote)
                 state.update({
                     "side_label": side_label,
                     "token_id": token_id,
+                    "target_quote": total_quote,
+                    "sizing_tier": str(sizing_tier),
+                    "max_target_quote_seen": max(float(state.get("max_target_quote_seen", 0.0)), total_quote),
                     "remaining_quote": remaining_quote,
                     "target_shares": float(state.get("filled_shares", 0.0)) + remaining_quote / max(float(limit_price), 0.01),
                     "remaining_shares": remaining_quote / max(float(limit_price), 0.01),
@@ -1144,14 +1184,19 @@ class LiveRunner:
         self._apply_real_fok_ticket(state, ticket)
         return ticket
 
-    def _write_sim_record(self, wid, trig, p_adj, p_lower, t_rem, au, ad, best_dir, best_ev, fill_amt, status, reason, d_abs=0):
+    def _write_sim_record(self, wid, trig, p_best, p_side, t_rem, au, ad, best_dir, best_ev, fill_amt, status, reason, d_abs=0):
         try:
             import json as _j, os as _o
             _o.makedirs("logs", exist_ok=True)
+            ask = au if best_dir == "up" else ad if best_dir == "down" else None
+            edge = (float(p_side) - float(ask)) if ask is not None else None
+            kelly_raw = self._raw_kelly_ratio(float(p_side), float(ask)) if ask is not None else None
             rec = {"window_id": wid, "status": status, "reason": reason,
-                   "trigger_pattern": trig, "p_adj": round(p_adj,3), "p_rev_lower": round(p_lower,3),
+                   "trigger_pattern": trig, "p_best": round(p_best,3), "p_side": round(p_side,3),
                    "T_remaining": round(t_rem,0), "ask_up": au, "ask_down": ad,
                    "best_dir": best_dir, "best_ev": round(best_ev,4),
+                   "edge": None if edge is None else round(edge, 4),
+                   "kelly_raw": None if kelly_raw is None else round(kelly_raw, 4),
                    "fill_amount": round(fill_amt,2),
                    "d_abs_pct": round(d_abs,4),
                    "ts_ms": int(__import__("time").time() * 1000)}
@@ -1167,36 +1212,67 @@ class LiveRunner:
     def _calc_ev(win_prob: float, ask: float) -> float:
         return win_prob / ask - 1.0
 
+    @staticmethod
+    def _raw_kelly_ratio(win_prob: float, ask: float) -> float:
+        if ask <= 0 or ask >= 1:
+            return 0.0
+        return max(0.0, (float(win_prob) - float(ask)) / max(1.0 - float(ask), 1e-9))
+
+    @staticmethod
+    def _direction_min_thresholds(p_side: float) -> tuple[float, float, float]:
+        """根据方向概率动态调整最低阈值 (min_edge, min_ev, min_kelly_raw)
+        
+        高概率：放宽 EV 要求，因为胜率高、长期稳定
+        低概率：提高 EV 要求，需要更大补偿覆盖风险
+        """
+        if p_side >= 0.85:
+            return 0.08, 0.04, 0.06   # exceptional 档位：高把握，允许小 EV
+        if p_side >= 0.75:
+            return 0.07, 0.06, 0.07   # strong 档位
+        if p_side >= 0.65:
+            return 0.055, 0.08, 0.08  # base 档位（原基准）
+        if p_side >= 0.55:
+            return 0.06, 0.12, 0.10   # 低把握：提高 EV 要求
+        return 0.08, 0.15, 0.12       # 极低概率：严格过滤
+
+    @staticmethod
+    def _direction_sizing_profile(*, p_side: float, edge: float, ev: float, kelly_raw: float) -> tuple[float, float, str]:
+        if p_side >= 0.85 and edge >= 0.12 and ev >= 0.20 and kelly_raw >= 0.18:
+            return 0.35, 0.18, "exceptional"
+        if p_side >= 0.75 and edge >= 0.09 and ev >= 0.15 and kelly_raw >= 0.13:
+            return 0.28, 0.14, "strong"
+        return 0.20, 0.10, "base"
+
     def _resolve_best_direction_by_ev(self, event: dict, window_id: str):
         if self.poly_client is None or self.market_resolver is None:
             return None, -1.0, None, None
         active = self.market_resolver.get_active()
         if active is None:
             return None, -1.0, None, None
-        p_rev = float(event.get("p_rev_lower") or event.get("p_rev") or 0.3)
-        trig_dir = str(event.get("trigger_direction") or "").lower()
-        if trig_dir not in ("up", "down"):
-            return None, -1.0, None, None
+        p_up = float(event.get("p_up") or 0.5)
+        p_down = float(event.get("p_down") or (1.0 - p_up))
+        p_up = max(0.0, min(1.0, p_up))
+        p_down = max(0.0, min(1.0, p_down))
+        norm = p_up + p_down
+        if norm > 0:
+            p_up, p_down = p_up / norm, p_down / norm
         book_up = self.poly_client.fetch_book(active.token_id_yes)
         book_dn = self.poly_client.fetch_book(active.token_id_no)
         ask_up = float(book_up.get("best_ask") or 0.99)
         ask_dn = float(book_dn.get("best_ask") or 0.99)
         if ask_up <= 0 or ask_up >= 1 or ask_dn <= 0 or ask_dn >= 1:
             return None, -1.0, ask_up, ask_dn
-        def fee(a, s=5.0): return 0.018 * a * s + 0.10 + 0.002 * s
-        def ev(wp, a, s=5.0): return s * (wp / a - 1.0) - fee(a, s)
-        if trig_dir == "up":
-            ev_rev = ev(p_rev, ask_dn)
-            ev_trend = ev(1-p_rev, ask_up)
-        else:
-            ev_rev = ev(p_rev, ask_up)
-            ev_trend = ev(1-p_rev, ask_dn)
-        thr = 0.02
-        if ev_rev > thr and ev_rev >= ev_trend:
-            return ("down" if trig_dir == "up" else "up"), ev_rev, ask_up, ask_dn
-        elif ev_trend > thr:
-            return trig_dir, ev_trend, ask_up, ask_dn
-        return None, max(ev_rev, ev_trend), ask_up, ask_dn
+        ev_up = self._calc_ev(p_up, ask_up)
+        ev_down = self._calc_ev(p_down, ask_dn)
+        kelly_up = self._raw_kelly_ratio(p_up, ask_up)
+        kelly_down = self._raw_kelly_ratio(p_down, ask_dn)
+        if kelly_up > 0 or kelly_down > 0:
+            if kelly_up >= kelly_down:
+                return "up", ev_up, ask_up, ask_dn
+            return "down", ev_down, ask_up, ask_dn
+        if ev_up >= ev_down:
+            return "up", ev_up, ask_up, ask_dn
+        return "down", ev_down, ask_up, ask_dn
 
     def _on_bar(self, bar: KlineBar) -> None:
         with self._bar_lock:
@@ -1418,6 +1494,11 @@ class LiveRunner:
         ideal = min(max(ideal, ba), mx)
         return float(round(ideal, 4))
 
+    @staticmethod
+    def _runtime_path(*parts: str) -> str:
+        root = os.environ.get("TWINENGINES_ROOT") or os.getcwd()
+        return os.path.join(root, *parts)
+
     # ---------------- 业务接口 ----------------
 
     def _reconcile_window_order_flags_from_exchange(self) -> None:
@@ -1432,7 +1513,7 @@ class LiveRunner:
         self,
         *,
         window_id: str,
-        side: str,                  # "TREND" / "REVERSAL" (策略层信号方向)
+        side: str,                  # 策略侧标签，当前主链路使用 DIRECTION
         direction: str,             # "up" / "down" (5min 合约方向)
         size_quote_usdc: float,
         limit_price: float,
@@ -1541,7 +1622,7 @@ class LiveRunner:
             )
             self.position_lock.attach_order(window_id, client_order_id)
 
-            if ticket.state == OrderState.FILLED:
+            if ticket.state in (OrderState.FILLED, OrderState.PARTIAL) and float(ticket.filled_size_shares or ticket.size_shares or 0.0) > 0:
                 self.poly_client.refresh_order_truth(
                     ticket, delay_ms=int(rt.order_ghost_confirm_delay_ms),
                 )
@@ -1555,6 +1636,7 @@ class LiveRunner:
                         "exchange_order_id": ticket.exchange_order_id,
                         "client_order_id": client_order_id,
                         "ref_limit_price": float(limit_price),
+                        "state": ticket.state.value,
                     })
                 if self.exit_guard is not None:
                     try:

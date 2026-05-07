@@ -229,13 +229,9 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="空跑信号: 用 --artifact 加载 artifact, 仅记录信号到 SQLite + JSONL, 绝不下单")
     lr.add_argument("--record-shadow-signals", action="store_true",
                     help="实盘并存: 加载 --artifact 并记录影子信号；真实下单仍仅当 .env 关闭 DRY_RUN 且 ENABLE_REAL_ORDERS=true")
-    lr.add_argument("--artifact", default="", help="--dry-run-signals / --record-shadow-signals 需要: artifact JSON 路径")
+    lr.add_argument("--artifact", default="", help="direction probability model artifact PKL path")
     lr.add_argument("--shadow-signal-log", default="logs/shadow_signals.jsonl",
                     help="--dry-run-signals 输出的 jsonl 路径 (默认 logs/shadow_signals.jsonl)")
-    lr.add_argument("--disable-trend", action="store_true",
-                    help="关闭顺势引擎: 仅保留反转引擎 (推荐用于纯反转影子/实盘验证)")
-    lr.add_argument("--disable-reversal", action="store_true",
-                    help="关闭反转引擎: 不发出 REVERSAL (可覆盖 artifact.shadow_engine.disable_reversal)")
 
     wu = sub.add_parser(
         "webui",
@@ -251,8 +247,8 @@ def _build_parser() -> argparse.ArgumentParser:
     wu.add_argument("--log-dir", default="logs", help="日志目录 (主日志 = LOG_DIR/twinengines.log)")
     wu.add_argument("--shadow-signals", default="logs/shadow_signals.jsonl",
                     help="影子信号 jsonl 路径")
-    wu.add_argument("--default-artifact", default="artifact_btc_v6.json",
-                    help="--dry-run-signals 默认 artifact 路径")
+    wu.add_argument("--default-artifact", default="artifacts/direction_probability_vol_v1.pkl",
+                    help="--dry-run-signals 默认 direction probability artifact 路径")
 
     sr = sub.add_parser(
         "shadow-report",
@@ -2198,6 +2194,9 @@ def _cmd_live_run(args: argparse.Namespace) -> int:
     if args.enable_real:
         os.environ.setdefault("ENABLE_REAL_ORDERS", "true")
 
+    if args.enable_real and not args.artifact:
+        print("[live-run] --enable-real 需要同时提供 --artifact <path>，否则新模型不会启动", file=sys.stderr)
+        return 2
     if args.dry_run_signals and not args.artifact:
         print("[live-run] --dry-run-signals 需要同时提供 --artifact <path>", file=sys.stderr)
         return 2
@@ -2217,8 +2216,6 @@ def _cmd_live_run(args: argparse.Namespace) -> int:
         record_shadow_signals=bool(args.record_shadow_signals),
         artifact_path=(args.artifact or None),
         shadow_signal_log_path=args.shadow_signal_log,
-        disable_trend=bool(args.disable_trend),
-        disable_reversal=True if getattr(args, "disable_reversal", False) else None,
     )
     if args.seconds and args.seconds > 0:
         import threading as _th
