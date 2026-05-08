@@ -214,12 +214,11 @@ class LiveRunner:
         ok, reason = is_real_order_allowed(runtime)
         if ok:
             if not bool(runtime.auto_redeem_enabled):
-                logger.error("Real mode requires AUTO_REDEEM_ENABLED=true to prevent capital lock.")
-                self.alerting.alert("error", "auto_redeem_required", {
-                    "reason": "AUTO_REDEEM_ENABLED=false",
-                })
-                self._abort("auto_redeem_required")
-                return _abort_start_cleanup()
+                logger.info("AUTO_REDEEM_ENABLED=false; skipping automatic redeem because Polymarket now provides official redemption flow.")
+                if self.alerting is not None:
+                    self.alerting.alert("info", "auto_redeem_disabled", {
+                        "reason": "AUTO_REDEEM_ENABLED=false",
+                    })
             inited, init_reason = self.poly_client.init_real_client()
             if not inited:
                 logger.error("Real client init failed: %s", init_reason)
