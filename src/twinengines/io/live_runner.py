@@ -1750,15 +1750,13 @@ class LiveRunner:
             return result(ok, "allowed_hedge" if ok else "hedge_quality_not_met", "hedge_priority", req_prob, req_edge, req_ev, req_kelly)
 
         if intent == "ADD":
-            if phase >= 3:
-                req_prob, req_edge, req_ev, req_kelly = 0.80, 0.20, 0.25, 0.12
-                ok = p_side >= req_prob and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly and ask <= 0.60
-                return result(ok, "allowed_phase3_strict_add" if ok else "phase3_add_shadow_only", "phase3_add_strict", req_prob, req_edge, req_ev, req_kelly, {"phase3_add_max_ask": 0.60})
             if phase == 2:
-                req_prob, req_edge, req_ev, req_kelly = 0.80, 0.12, 0.15, 0.10
-                ok = p_side >= req_prob and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
-                return result(ok, "allowed_phase2_add" if ok else "phase2_add_quality_not_met", "phase2_add_strict", req_prob, req_edge, req_ev, req_kelly)
-            return result(False, "add_not_allowed_before_phase2", "no_early_add", 0.80, 0.12, 0.15, 0.10)
+                req_prob, req_edge, req_ev, req_kelly = 0.0, -1.0, -1.0, 0.0
+                ok = ask < 0.80
+                return result(ok, "allowed_phase2_add_price_only" if ok else "phase2_add_price_not_met", "phase2_add_price_lt_0_8", req_prob, req_edge, req_ev, req_kelly, {"add_max_ask_exclusive": 0.80})
+            if phase >= 3:
+                return result(False, "phase3_add_shadow_only", "no_late_add", 0.0, -1.0, -1.0, 0.0)
+            return result(False, "add_not_allowed_before_phase2", "no_early_add", 0.0, -1.0, -1.0, 0.0)
 
         if intent == "ENTRY_VALUE":
             if phase <= 0:
@@ -1788,8 +1786,8 @@ class LiveRunner:
         if phase == 2:
             if ask >= 0.72:
                 req_prob, req_edge, req_ev, req_kelly = 0.82, 0.06, 0.08, 0.06
-                ok = p_side >= req_prob and ask <= 0.82 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
-                return result(ok, "allowed_phase2_high_price_trend" if ok else "phase2_high_price_trend_shadow_only", "phase2_high_price_confirmed", req_prob, req_edge, req_ev, req_kelly, {"high_price_min_ask": 0.72, "trend_max_ask": 0.82})
+                ok = p_side >= req_prob and ask < 0.80 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+                return result(ok, "allowed_phase2_high_price_trend" if ok else "phase2_high_price_trend_shadow_only", "phase2_high_price_confirmed", req_prob, req_edge, req_ev, req_kelly, {"high_price_min_ask": 0.72, "trend_max_ask_exclusive": 0.80})
             req_prob, req_edge, req_ev, req_kelly = 0.68, 0.055, 0.08, 0.06
             ok = p_side >= req_prob and ask <= 0.72 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
             return result(ok, "allowed_phase2_trend" if ok else "phase2_trend_quality_not_met", "phase2_main_trend", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.72})
