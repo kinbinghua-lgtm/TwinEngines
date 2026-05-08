@@ -47,7 +47,7 @@ class PositionExitGuardCfg:
     min_exit_quote_usdc: float = 1.0
     exit_retry_cooldown_sec: float = 2.0
     max_exit_attempts_per_position: int = 8
-    unified_exit_prob_margin: float = 0.15
+    unified_exit_prob_margin: float = 0.20
     unified_exit_min_seconds_left: float = 15.0
 
 
