@@ -107,6 +107,9 @@ class PolymarketRuntimeCfg:
 
     # 资金安全 (与策略层无关, 实盘 io 兜底)
     daily_max_loss_usdc: float = 50.0                # 实盘当日最大允许亏损 (绝对值兜底)
+    real_max_window_risk_usdc: float = 5.0           # 单个 5m 窗口真实最大投入硬上限；<=0 表示只用比例上限
+    real_max_window_risk_ratio: float = 0.12         # 单个 5m 窗口真实最大投入占权益比例硬上限
+    startup_observe_only_max_missed_sec: float = 8.0 # 启动后若当前窗口缺失早期信号超过该秒数，本窗口只观察不实盘
     naked_daily_drawdown_stop: float = 0.05          # naked 专用日内相对回撤停手；<=0 表示关闭
     abort_on_unknown_api_error: bool = True          # 遇到未知错误码立刻停手, 等人工
     auto_shadow_on_insufficient_funds: bool = True   # 资金不足/低于最小下单额时自动降级影子单
@@ -229,6 +232,9 @@ def load_polymarket_runtime_cfg(env_file: Optional[str] = None) -> PolymarketRun
         order_ghost_confirm_delay_ms=_env_int("ORDER_GHOST_CONFIRM_DELAY_MS", 400),
         book_max_staleness_sec=_env_float("BOOK_MAX_STALENESS_SEC", 5.0),
         daily_max_loss_usdc=_env_float("DAILY_MAX_LOSS_USDC", 50.0),
+        real_max_window_risk_usdc=_env_float("REAL_MAX_WINDOW_RISK_USDC", 5.0),
+        real_max_window_risk_ratio=_env_float("REAL_MAX_WINDOW_RISK_RATIO", 0.12),
+        startup_observe_only_max_missed_sec=_env_float("STARTUP_OBSERVE_ONLY_MAX_MISSED_SEC", 8.0),
         naked_daily_drawdown_stop=_env_float("NAKED_DAILY_DRAWDOWN_STOP", 0.05),
         abort_on_unknown_api_error=_env_bool("ABORT_ON_UNKNOWN_API_ERROR", True),
         auto_shadow_on_insufficient_funds=_env_bool("AUTO_SHADOW_ON_INSUFFICIENT_FUNDS", True),

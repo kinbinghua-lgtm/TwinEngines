@@ -200,9 +200,17 @@ def systemd_strategy_status() -> dict[str, Any]:
     try:
         p = subprocess.run(["systemctl", "is-active", "twinengines-strategy"], capture_output=True, text=True, timeout=3)
         active = p.stdout.strip()
-        q = subprocess.run(["systemctl", "show", "-p", "MainPID", "--value", "twinengines-strategy"], capture_output=True, text=True, timeout=3)
-        pid = int((q.stdout.strip() or "0"))
-        return {"available": True, "active": active, "running": active == "active" and pid > 0 and pid_alive(pid), "pid": pid if pid > 0 else None}
+        q = subprocess.run(["systemctl", "show", "-p", "MainPID", "-p", "ExecStart", "--value", "twinengines-strategy"], capture_output=True, text=True, timeout=3)
+        vals = q.stdout.splitlines()
+        pid = 0
+        exec_start = ""
+        for line in vals:
+            s = line.strip()
+            if s.isdigit():
+                pid = int(s)
+            elif s:
+                exec_start = s
+        return {"available": True, "active": active, "running": active == "active" and pid > 0 and pid_alive(pid), "pid": pid if pid > 0 else None, "exec_start": exec_start}
     except Exception as e:
         return {"available": False, "active": "unknown", "running": False, "pid": None, "error": str(e)}
 
@@ -221,7 +229,7 @@ def strategy_status(root: Path) -> dict[str, Any]:
             "pid_file": "systemd:twinengines-strategy",
             "service": "twinengines-strategy",
             "service_state": sd.get("active"),
-            "command": " ".join(live_command(root)),
+            "command": sd.get("exec_start") or "systemctl start twinengines-strategy",
         }
     pid = read_pid(live_pid_file(root))
     running = bool(pid and pid_alive(pid))

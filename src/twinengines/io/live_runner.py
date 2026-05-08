@@ -125,6 +125,8 @@ class LiveRunner:
         "last_success_ts_ms": None,
     })
     _cleanup_done: bool = False
+    _started_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
+    _startup_observe_only_windows: set[str] = field(default_factory=set)
 
     # ---------------- 工厂 ----------------
 
@@ -156,6 +158,8 @@ class LiveRunner:
             logger.warning("LiveRunner already started")
             return True
 
+        self._started_at_ms = int(time.time() * 1000)
+        self._startup_observe_only_windows.clear()
         runtime = self.cfg.runtime
 
         # logging
@@ -741,6 +745,17 @@ class LiveRunner:
         min_kelly_raw = 0.08
         min_entry_t_rem = 15.0
         key = trig[:3] if len(trig) >= 3 else ""
+        startup_observe_only = False
+        startup_missed_sec = 0.0
+        if is_real_mode and window_id.startswith("w"):
+            try:
+                window_start_ms = int(window_id[1:])
+                startup_missed_sec = max(0.0, (int(self._started_at_ms or 0) - window_start_ms) / 1000.0)
+                if startup_missed_sec > float(getattr(self.cfg.runtime, "startup_observe_only_max_missed_sec", 8.0)):
+                    startup_observe_only = True
+                    self._startup_observe_only_windows.add(window_id)
+            except Exception:
+                startup_observe_only = False
 
         # 基础状态更新
         _SIM_CURRENT.update({"window_id": window_id, "prefix": trig, "T": round(t_rem, 0),
@@ -748,6 +763,8 @@ class LiveRunner:
                              "best_prob_dir": best_prob_dir,
                              "d_signed": round(d_signed, 4), "d_abs": round(d_abs, 4),
                              "phase": phase, "elapsed_sec": round(elapsed_sec, 0),
+                             "startup_observe_only": bool(startup_observe_only),
+                             "startup_missed_sec": round(startup_missed_sec, 1),
                              "min_side_prob": min_side_prob, "min_edge": min_edge,
                              "min_ev": min_ev, "min_kelly_raw": min_kelly_raw})
         try:
@@ -797,6 +814,8 @@ class LiveRunner:
             "p_up": round(p_up, 6),
             "p_down": round(p_down, 6),
             "best_prob_dir": best_prob_dir,
+            "startup_observe_only": bool(startup_observe_only),
+            "startup_missed_sec": round(startup_missed_sec, 2),
         }
         def _record_decision(fill_amt, status, reason, extra=None):
             meta = dict(signal_meta)
@@ -873,12 +892,19 @@ class LiveRunner:
             sizing_fraction = min(sizing_fraction, 0.12)
             sizing_tier = f"floor_lottery_{sizing_tier}"
         _SIM_CURRENT["sizing_fraction"] = round(sizing_fraction, 4)
+        runtime_window_cap_abs = float(getattr(self.cfg.runtime, "real_max_window_risk_usdc", 5.0) or 0.0)
+        runtime_window_cap_ratio = float(getattr(self.cfg.runtime, "real_max_window_risk_ratio", 0.12) or 0.0)
+        effective_max_stake_ratio = min(max_stake_ratio, runtime_window_cap_ratio) if runtime_window_cap_ratio > 0 else max_stake_ratio
         _SIM_CURRENT["max_stake_ratio"] = round(max_stake_ratio, 4)
+        _SIM_CURRENT["effective_max_stake_ratio"] = round(effective_max_stake_ratio, 4)
+        _SIM_CURRENT["real_max_window_risk_usdc"] = round(runtime_window_cap_abs, 2) if runtime_window_cap_abs > 0 else None
         _SIM_CURRENT["sizing_tier"] = sizing_tier
         _SIM_CURRENT["floor_price_entry"] = bool(is_floor_price_entry)
         signal_meta.update({
             "sizing_fraction": round(sizing_fraction, 4),
             "max_stake_ratio": round(max_stake_ratio, 4),
+            "effective_max_stake_ratio": round(effective_max_stake_ratio, 4),
+            "real_max_window_risk_usdc": round(runtime_window_cap_abs, 2) if runtime_window_cap_abs > 0 else None,
             "sizing_tier": sizing_tier,
             "floor_price_entry": bool(is_floor_price_entry),
         })
@@ -906,17 +932,30 @@ class LiveRunner:
                 if real_equity is None:
                     _SIM_CURRENT["real_status"] = "real_equity_unavailable"
                 else:
-                    real_sizing = SizingCfg(kelly_fraction=sizing_fraction, max_stake_ratio=max_stake_ratio, min_absolute_stake=2.50)
-                    real_wp = best_side_prob
-                    real_b = (1 - ask) / ask if ask > 0 else 1
-                    real_kelly_total = stake_for_trade(
-                        portfolio_equity=float(real_equity),
-                        win_prob=real_wp,
-                        net_payoff=real_b,
-                        cfg=real_sizing,
-                    )
+                    if startup_observe_only:
+                        _SIM_CURRENT["real_status"] = "startup_observe_only"
+                        _SIM_CURRENT["real_skip_reason"] = "startup_window_not_seen_from_start"
+                        real_kelly_total = 0.0
+                        if self.store is not None:
+                            self.store.append_audit("order_compliance_skip", {
+                                "window_id": window_id,
+                                "direction": best_dir,
+                                "reason": "startup_observe_only",
+                                "startup_missed_sec": round(startup_missed_sec, 2),
+                                **signal_meta,
+                            })
+                    else:
+                        real_sizing = SizingCfg(kelly_fraction=sizing_fraction, max_stake_ratio=effective_max_stake_ratio, min_absolute_stake=2.50)
+                        real_wp = best_side_prob
+                        real_b = (1 - ask) / ask if ask > 0 else 1
+                        real_kelly_total = stake_for_trade(
+                            portfolio_equity=float(real_equity),
+                            win_prob=real_wp,
+                            net_payoff=real_b,
+                            cfg=real_sizing,
+                        )
                     if real_kelly_total < 2.50:
-                        if float(real_equity or 0.0) * max_stake_ratio < 2.50:
+                        if float(real_equity or 0.0) * effective_max_stake_ratio < 2.50:
                             _SIM_CURRENT["real_status"] = "real_Kelly<2.5"
                         else:
                             real_kelly_total = 2.50
@@ -931,12 +970,32 @@ class LiveRunner:
                                 float(POLYMARKET_PLATFORM.min_limit_order_shares) * float(limit_px),
                             )
                             if real_kelly_total < platform_min_quote:
-                                if float(real_equity or 0.0) * max_stake_ratio < platform_min_quote:
+                                if float(real_equity or 0.0) * effective_max_stake_ratio < platform_min_quote:
                                     _SIM_CURRENT["real_status"] = "real_platform_min_not_met"
                                     _SIM_CURRENT["real_platform_min_quote"] = round(platform_min_quote, 2)
                                     real_kelly_total = 0.0
                                 else:
                                     real_kelly_total = platform_min_quote
+                            if real_kelly_total >= platform_min_quote:
+                                window_abs_cap = runtime_window_cap_abs if runtime_window_cap_abs > 0 else float("inf")
+                                window_ratio_cap = float(real_equity) * effective_max_stake_ratio if effective_max_stake_ratio > 0 else float("inf")
+                                hard_window_cap = min(window_abs_cap, window_ratio_cap)
+                                if hard_window_cap < platform_min_quote:
+                                    _SIM_CURRENT["real_status"] = "real_window_cap_below_platform_min"
+                                    _SIM_CURRENT["real_window_cap"] = round(float(hard_window_cap), 2)
+                                    if self.store is not None:
+                                        self.store.append_audit("order_compliance_skip", {
+                                            "window_id": window_id,
+                                            "direction": best_dir,
+                                            "reason": "window_cap_below_platform_min",
+                                            "window_cap": round(float(hard_window_cap), 4),
+                                            "platform_min_quote": round(platform_min_quote, 4),
+                                            **signal_meta,
+                                        })
+                                    real_kelly_total = 0.0
+                                else:
+                                    real_kelly_total = min(float(real_kelly_total), float(hard_window_cap))
+                                    _SIM_CURRENT["real_window_cap"] = round(float(hard_window_cap), 2)
                             if real_kelly_total >= platform_min_quote:
                                 real_single = min(float(real_kelly_total), max(depth_cap, platform_min_quote))
                                 if real_single < platform_min_quote:
@@ -959,6 +1018,8 @@ class LiveRunner:
                                         "best_kelly_raw": round(best_kelly_raw, 6),
                                         "target_quote": round(float(real_kelly_total), 4),
                                         "attempt_quote": round(float(real_single), 4),
+                                        "effective_max_stake_ratio": round(effective_max_stake_ratio, 6),
+                                        "real_window_cap": round(float(_SIM_CURRENT.get("real_window_cap") or 0.0), 4),
                                     },
                                 )
                                 _SIM_CURRENT["real_status"] = "real_fok_evaluated"
@@ -1395,6 +1456,10 @@ class LiveRunner:
                 "req_kelly_raw": meta.get("req_kelly_raw"),
                 "sizing_fraction": meta.get("sizing_fraction"),
                 "max_stake_ratio": meta.get("max_stake_ratio"),
+                "effective_max_stake_ratio": meta.get("effective_max_stake_ratio"),
+                "real_max_window_risk_usdc": meta.get("real_max_window_risk_usdc"),
+                "startup_observe_only": meta.get("startup_observe_only"),
+                "startup_missed_sec": meta.get("startup_missed_sec"),
                 "target_upgrade_count": meta.get("target_upgrade_count"),
                 "add_blocked": meta.get("add_blocked"),
                 "sizing_tier": meta.get("sizing_tier"),
