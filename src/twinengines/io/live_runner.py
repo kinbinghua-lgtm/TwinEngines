@@ -973,7 +973,7 @@ class LiveRunner:
                     if startup_observe_only:
                         _SIM_CURRENT["real_status"] = "startup_observe_only"
                         _SIM_CURRENT["real_skip_reason"] = "startup_window_not_seen_from_start"
-                        real_kelly_total = 0.0
+                        _SIM_CURRENT["real_decision_stage"] = "startup_observe_only_hard_skip"
                         if self.store is not None:
                             self.store.append_audit("order_compliance_skip", {
                                 "window_id": window_id,
@@ -982,6 +982,8 @@ class LiveRunner:
                                 "startup_missed_sec": round(startup_missed_sec, 2),
                                 **signal_meta,
                             })
+                        self._write_current_window_snapshot()
+                        return
                     else:
                         real_sizing = SizingCfg(kelly_fraction=sizing_fraction, max_stake_ratio=effective_max_stake_ratio, min_absolute_stake=2.50)
                         real_wp = best_side_prob
