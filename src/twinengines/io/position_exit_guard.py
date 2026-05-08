@@ -45,22 +45,10 @@ class PositionExitGuardCfg:
     enabled: bool = True
     check_interval_sec: float = 1.0
     min_exit_quote_usdc: float = 1.0
-    adverse_prob_epsilon: float = 1e-6
-    held_prob_drawdown_exit: float = 0.18
-    min_held_prob_exit: float = 0.52
-    last_seconds_exit_sec: float = 20.0
-    strong_adverse_prob_exit: float = 0.62
-    strong_prob_gap_exit: float = 0.12
-    catastrophic_adverse_prob_exit: float = 0.78
-    held_prob_floor_exit: float = 0.35
-    held_prob_decay_exit_floor: float = 0.52
     exit_retry_cooldown_sec: float = 2.0
     max_exit_attempts_per_position: int = 8
-    early_entry_reversal_exit_sec: float = 45.0
-    early_entry_adverse_prob_exit: float = 0.58
-    early_entry_prob_gap_exit: float = 0.16
-    late_reversal_relax_seconds_left: float = 15.0
-    late_reversal_adverse_prob_exit: float = 0.93
+    unified_exit_prob_margin: float = 0.15
+    unified_exit_min_seconds_left: float = 15.0
 
 
 class PositionExitGuard:
@@ -235,16 +223,33 @@ class PositionExitGuard:
         best_bid = float(book.get("best_bid") or 0.0)
         seconds_left = (int(pos.market_end_ts_ms) - int(now_ms)) / 1000.0
         held_prob = self._held_probability(pos)
-        if seconds_left <= float(self.cfg.last_seconds_exit_sec) and held_prob is not None and held_prob < float(self.cfg.min_held_prob_exit):
-            pos.last_reason = "last_seconds_weak_probability"
-            self._audit("exit_guard_last_seconds_weak_probability", pos, {
-                "seconds_left": round(seconds_left, 2),
-                "held_prob": round(float(held_prob), 4),
-                "best_bid": round(best_bid, 4),
-            })
-            self._exit_5share_loop(pos, reason="last_seconds_weak_probability")
-            return
-        pos.last_reason = "hold_direction_probability"
+        adverse_prob = self._adverse_probability(pos)
+        if held_prob is not None and adverse_prob is not None:
+            entry_prob = self._entry_probability(pos)
+            prob_ok = float(adverse_prob) >= float(entry_prob) + float(self.cfg.unified_exit_prob_margin)
+            price_ok = float(best_bid) < max(0.0, 1.0 - float(pos.entry_price))
+            time_ok = float(seconds_left) > float(self.cfg.unified_exit_min_seconds_left)
+            if prob_ok and price_ok and time_ok:
+                reason = "unified_reverse_probability_price_time"
+                pos.exit_intent_reason = reason
+                pos.last_reason = reason
+                self._audit("exit_guard_unified_exit", pos, {
+                    "reason": reason,
+                    "seconds_left": round(float(seconds_left), 2),
+                    "held_prob": round(float(held_prob), 4),
+                    "adverse_prob": round(float(adverse_prob), 4),
+                    "entry_prob": round(float(entry_prob), 4),
+                    "required_adverse_prob": round(float(entry_prob) + float(self.cfg.unified_exit_prob_margin), 4),
+                    "best_bid": round(best_bid, 4),
+                    "entry_price": round(float(pos.entry_price), 4),
+                    "reverse_price_boundary": round(max(0.0, 1.0 - float(pos.entry_price)), 4),
+                    "prob_ok": bool(prob_ok),
+                    "price_ok": bool(price_ok),
+                    "time_ok": bool(time_ok),
+                })
+                self._exit_5share_loop(pos, reason=reason)
+                return
+        pos.last_reason = "hold_unified_exit_conditions"
 
     def _maybe_exit_on_probability_danger(
         self,
@@ -259,56 +264,7 @@ class PositionExitGuard:
         previous_held_max: Optional[float] = None,
         ts_ms: Optional[int] = None,
     ) -> None:
-        if pos.closed:
-            return
-        prob_gap = float(adverse_prob) - float(held_prob)
-        now_ms = int(ts_ms or time.time() * 1000)
-        age_sec = max(0.0, (now_ms - int(pos.opened_ts_ms or now_ms)) / 1000.0)
-        seconds_left = max(0.0, (int(pos.market_end_ts_ms) - now_ms) / 1000.0)
-        late_relaxed = seconds_left <= float(self.cfg.late_reversal_relax_seconds_left)
-        catastrophic_adverse_prob_exit = float(self.cfg.catastrophic_adverse_prob_exit)
-        strong_adverse_prob_exit = float(self.cfg.strong_adverse_prob_exit)
-        if late_relaxed:
-            catastrophic_adverse_prob_exit = max(catastrophic_adverse_prob_exit, float(self.cfg.late_reversal_adverse_prob_exit))
-            strong_adverse_prob_exit = max(strong_adverse_prob_exit, float(self.cfg.late_reversal_adverse_prob_exit))
-        reason: Optional[str] = None
-        if (
-            age_sec <= float(self.cfg.early_entry_reversal_exit_sec)
-            and adverse_prob >= float(self.cfg.early_entry_adverse_prob_exit)
-            and prob_gap >= float(self.cfg.early_entry_prob_gap_exit)
-        ):
-            reason = "early_entry_reversal"
-        elif adverse_prob >= catastrophic_adverse_prob_exit and held_prob <= max(float(self.cfg.held_prob_floor_exit), 1.0 - catastrophic_adverse_prob_exit):
-            reason = "catastrophic_probability_reversal"
-        elif adverse_prob >= strong_adverse_prob_exit and prob_gap >= float(self.cfg.strong_prob_gap_exit):
-            reason = "direction_probability_reversed"
-        elif previous_held_max and previous_held_max > 0 and held_prob <= previous_held_max - float(self.cfg.held_prob_drawdown_exit) and held_prob < float(self.cfg.held_prob_decay_exit_floor):
-            reason = "held_probability_decay"
-        if reason is None:
-            return
-        if pos.strong_reverse_triggered and reason in ("direction_probability_reversed", "catastrophic_probability_reversal", "early_entry_reversal"):
-            return
-        if reason in ("direction_probability_reversed", "catastrophic_probability_reversal", "early_entry_reversal"):
-            pos.strong_reverse_triggered = True
-        pos.exit_intent_reason = reason
-        pos.last_reason = reason
-        self._audit(f"exit_guard_{reason}", pos, {
-            "trigger": trigger,
-            "signal_dir": signal_dir,
-            "p_up": round(float(p_up), 4),
-            "p_down": round(float(p_down), 4),
-            "held_prob": round(float(held_prob), 4),
-            "adverse_prob": round(float(adverse_prob), 4),
-            "prob_gap": round(float(prob_gap), 4),
-            "position_age_sec": round(float(age_sec), 2),
-            "seconds_left": round(float(seconds_left), 2),
-            "late_reversal_relaxed": bool(late_relaxed),
-            "effective_strong_adverse_prob_exit": round(float(strong_adverse_prob_exit), 4),
-            "effective_catastrophic_adverse_prob_exit": round(float(catastrophic_adverse_prob_exit), 4),
-            "max_held_prob_seen": round(float(pos.max_held_prob_seen or 0.0), 4),
-            "ts_ms": now_ms,
-        })
-        self._exit_5share_loop(pos, reason=reason)
+        return
 
     def _exit_5share_loop(self, pos: ExitPosition, *, reason: str) -> None:
         min_shares = float(POLYMARKET_PLATFORM.min_limit_order_shares)
@@ -407,6 +363,18 @@ class PositionExitGuard:
         if pos.direction == "down":
             return pos.last_p_down
         return None
+
+    @staticmethod
+    def _adverse_probability(pos: ExitPosition) -> Optional[float]:
+        if pos.direction == "up":
+            return pos.last_p_down
+        if pos.direction == "down":
+            return pos.last_p_up
+        return None
+
+    @staticmethod
+    def _entry_probability(pos: ExitPosition) -> float:
+        return max(0.0, min(1.0, 1.0 - float(pos.entry_price)))
 
     @staticmethod
     def _key(window_id: str, token_id: str) -> str:
