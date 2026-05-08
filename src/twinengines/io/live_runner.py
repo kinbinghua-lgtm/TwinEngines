@@ -835,21 +835,8 @@ class LiveRunner:
         dir_key = f"{window_id}:{best_dir}"
         opposite_dir = "down" if best_dir == "up" else "up"
         opposite_key = f"{window_id}:{opposite_dir}"
-        existing_opposite_ev = float(_SIM_WIN_ENTRY_EV.get(opposite_key, 0.0) or 0.0)
         opposite_real = _REAL_WINDOW_ORDERS.get(opposite_key) or {}
-        opposite_meta = opposite_real.get("decision_meta") if isinstance(opposite_real.get("decision_meta"), dict) else {}
-        existing_opposite_ev = max(existing_opposite_ev, float(opposite_meta.get("best_ev") or 0.0))
         has_opposite_position = opposite_key in win_target or float(opposite_real.get("filled_shares", 0.0) or 0.0) > 1e-9
-        if has_opposite_position and best_ev_simple <= existing_opposite_ev + 1e-9:
-            _SIM_CURRENT["status"] = "reverse_ev_not_better"
-            _SIM_CURRENT["reverse_ev_required"] = round(existing_opposite_ev, 4)
-            _record_decision(0, "rejected", "reverse_ev_not_better", {
-                "opposite_dir": opposite_dir,
-                "opposite_ev": round(existing_opposite_ev, 4),
-                "reverse_ev": round(best_ev_simple, 4),
-            })
-            self._write_current_window_snapshot()
-            return
         is_floor_price_entry = ask < 0.10
         if is_floor_price_entry:
             floor_min_prob = 0.62
@@ -1051,20 +1038,8 @@ class LiveRunner:
                 logger.warning("real window fok submit failed: %s", e)
                 _SIM_CURRENT["real_status"] = "real_submit_error"
 
-        if window_id in win_dir and best_dir != win_dir[window_id]:
-            if best_ev_simple <= existing_opposite_ev + 1e-9:
-                filled_set.add(dir_key)
-                _SIM_CURRENT["status"] = "reverse_ev_not_better"
-                _SIM_CURRENT["best_dir"] = best_dir
-                _record_decision(0, "rejected", "reverse_ev_not_better", {
-                    "opposite_dir": opposite_dir,
-                    "opposite_ev": round(existing_opposite_ev, 4),
-                    "reverse_ev": round(best_ev_simple, 4),
-                })
-                self._write_current_window_snapshot()
-                return
-            _SIM_CURRENT["reverse_ev_accepted"] = True
-            _SIM_CURRENT["opposite_ev"] = round(existing_opposite_ev, 4)
+        if has_opposite_position:
+            _SIM_CURRENT["reverse_direction_allowed"] = True
 
         try:
             equity = self._sim_equity
