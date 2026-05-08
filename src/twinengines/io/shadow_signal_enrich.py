@@ -63,6 +63,37 @@ def _do_enrich(
         }
         return
 
+    side_sig = str(event.get("side") or "").upper()
+    if side_sig == "DIRECTION":
+        up_book = poly_client.fetch_book(active_market.token_id_yes)
+        down_book = poly_client.fetch_book(active_market.token_id_no)
+        now_ms = int(time.time() * 1000)
+        up_ts = int(up_book.get("ts_ms") or now_ms)
+        down_ts = int(down_book.get("ts_ms") or now_ms)
+        event["polymarket"] = {
+            "condition_id": getattr(active_market, "condition_id", None),
+            "market_end_ts_ms": getattr(active_market, "end_ts_ms", None),
+            "quote_model": "direction_probability_orderbook",
+            "mapping": {
+                "signal_engine_side": side_sig,
+                "trigger_pattern": event.get("trigger_pattern") or "",
+                "trade_direction": "direction_probability",
+            },
+            "best_ask_up": up_book.get("best_ask"),
+            "best_ask_down": down_book.get("best_ask"),
+            "best_ask_size_up": up_book.get("best_ask_size"),
+            "best_ask_size_dn": down_book.get("best_ask_size"),
+            "best_bid_up": up_book.get("best_bid"),
+            "best_bid_down": down_book.get("best_bid"),
+            "book_age_sec_up": round(max(0.0, (now_ms - up_ts) / 1000.0), 3),
+            "book_age_sec_down": round(max(0.0, (now_ms - down_ts) / 1000.0), 3),
+            "book_error_up": up_book.get("error"),
+            "book_error_down": down_book.get("error"),
+            "book_stale_up": bool(up_book.get("stale")),
+            "book_stale_down": bool(down_book.get("stale")),
+        }
+        return
+
     trigger = event.get("trigger_pattern") or ""
     if not trigger or len(trigger) < 1:
         event["polymarket"] = {"error": "invalid_trigger", "trigger": trigger}
