@@ -128,6 +128,9 @@ class LiveRunner:
     _cleanup_done: bool = False
     _started_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
     _startup_observe_only_windows: set[str] = field(default_factory=set)
+    _real_equity_cache_usdc: Optional[float] = None
+    _real_equity_cache_ts_ms: int = 0
+    _platform_min_boost_used: set[str] = field(default_factory=set)
 
     # ---------------- 工厂 ----------------
 
@@ -937,7 +940,10 @@ class LiveRunner:
 
         if is_real_mode:
             try:
-                real_equity = self.poly_client.fetch_account_equity_usdc() if self.poly_client else None
+                real_equity = self._fetch_real_equity_cached() if self.poly_client else None
+                _SIM_CURRENT["real_decision_stage"] = "equity_checked"
+                _SIM_CURRENT["real_equity_cached"] = self._real_equity_cache_usdc is not None
+                _SIM_CURRENT["real_equity_age_ms"] = max(0, int(time.time() * 1000) - int(self._real_equity_cache_ts_ms or 0)) if self._real_equity_cache_usdc is not None else None
                 if real_equity is None:
                     _SIM_CURRENT["real_status"] = "real_equity_unavailable"
                 else:
@@ -964,8 +970,12 @@ class LiveRunner:
                             cfg=real_sizing,
                         )
                     if real_kelly_total < 2.50:
+                        _SIM_CURRENT["real_decision_stage"] = "min_absolute_stake_check"
+                        _SIM_CURRENT["real_kelly_raw_quote"] = round(float(real_kelly_total), 4)
+                        _SIM_CURRENT["real_min_absolute_stake"] = 2.50
                         if float(real_equity or 0.0) * effective_max_stake_ratio < 2.50:
                             _SIM_CURRENT["real_status"] = "real_Kelly<2.5"
+                            _SIM_CURRENT["real_block_reason"] = "kelly_below_min_absolute_and_cap_cannot_boost"
                         else:
                             real_kelly_total = 2.50
                     if real_kelly_total >= 2.50:
@@ -978,10 +988,28 @@ class LiveRunner:
                                 float(POLYMARKET_PLATFORM.min_order_quote_usdc),
                                 float(POLYMARKET_PLATFORM.min_limit_order_shares) * float(limit_px),
                             )
+                            min_5_shares_quote = float(POLYMARKET_PLATFORM.min_limit_order_shares) * float(limit_px)
+                            _SIM_CURRENT["real_decision_stage"] = "platform_min_check"
+                            _SIM_CURRENT["real_platform_min_quote"] = round(platform_min_quote, 4)
+                            _SIM_CURRENT["real_min_5_shares_quote"] = round(min_5_shares_quote, 4)
+                            _SIM_CURRENT["real_min_order_quote"] = round(float(POLYMARKET_PLATFORM.min_order_quote_usdc), 4)
+                            _SIM_CURRENT["real_limit_px"] = round(float(limit_px), 4)
                             if real_kelly_total < platform_min_quote:
-                                if float(real_equity or 0.0) * effective_max_stake_ratio < platform_min_quote:
+                                boost_key = f"{window_id}:{best_dir}"
+                                one_time_boost_available = boost_key not in self._platform_min_boost_used and not has_opposite_position
+                                hard_pre_cap = min(
+                                    runtime_window_cap_abs if runtime_window_cap_abs > 0 else float("inf"),
+                                    float(real_equity or 0.0) * effective_max_stake_ratio if effective_max_stake_ratio > 0 else float("inf"),
+                                )
+                                _SIM_CURRENT["real_platform_min_boost_available"] = bool(one_time_boost_available)
+                                _SIM_CURRENT["real_pre_window_cap"] = round(float(hard_pre_cap), 4) if math.isfinite(float(hard_pre_cap)) else None
+                                if hard_pre_cap >= platform_min_quote and one_time_boost_available:
+                                    real_kelly_total = platform_min_quote
+                                    self._platform_min_boost_used.add(boost_key)
+                                    _SIM_CURRENT["real_platform_min_boost_used"] = True
+                                elif float(real_equity or 0.0) * effective_max_stake_ratio < platform_min_quote:
                                     _SIM_CURRENT["real_status"] = "real_platform_min_not_met"
-                                    _SIM_CURRENT["real_platform_min_quote"] = round(platform_min_quote, 2)
+                                    _SIM_CURRENT["real_block_reason"] = "platform_min_above_cap"
                                     real_kelly_total = 0.0
                                 else:
                                     real_kelly_total = platform_min_quote
@@ -991,6 +1019,8 @@ class LiveRunner:
                                 hard_window_cap = min(window_abs_cap, window_ratio_cap)
                                 if hard_window_cap < platform_min_quote:
                                     _SIM_CURRENT["real_status"] = "real_window_cap_below_platform_min"
+                                    _SIM_CURRENT["real_decision_stage"] = "window_cap_check"
+                                    _SIM_CURRENT["real_block_reason"] = "window_cap_below_platform_min"
                                     _SIM_CURRENT["real_window_cap"] = round(float(hard_window_cap), 2)
                                     if self.store is not None:
                                         self.store.append_audit("order_compliance_skip", {
@@ -1006,6 +1036,7 @@ class LiveRunner:
                                     real_kelly_total = min(float(real_kelly_total), float(hard_window_cap))
                                     _SIM_CURRENT["real_window_cap"] = round(float(hard_window_cap), 2)
                             if real_kelly_total >= platform_min_quote:
+                                _SIM_CURRENT["real_decision_stage"] = "submit_ready"
                                 real_single = min(float(real_kelly_total), max(depth_cap, platform_min_quote))
                                 if real_single < platform_min_quote:
                                     real_single = platform_min_quote
@@ -1032,11 +1063,14 @@ class LiveRunner:
                                     },
                                 )
                                 _SIM_CURRENT["real_status"] = "real_fok_evaluated"
+                                _SIM_CURRENT["real_decision_stage"] = "fok_submitted"
                                 _SIM_CURRENT["real_target_quote"] = round(float(real_kelly_total), 2)
                                 _SIM_CURRENT["real_attempt_quote"] = round(float(real_single), 2)
             except Exception as e:
                 logger.warning("real window fok submit failed: %s", e)
                 _SIM_CURRENT["real_status"] = "real_submit_error"
+                _SIM_CURRENT["real_decision_stage"] = "exception"
+                _SIM_CURRENT["real_block_reason"] = str(e)[:120]
 
         if has_opposite_position:
             _SIM_CURRENT["reverse_direction_allowed"] = True
@@ -1132,6 +1166,18 @@ class LiveRunner:
         _SIM_CURRENT["budget_total"] = round(kelly_total, 2)
         self._write_current_window_snapshot()
 
+    def _fetch_real_equity_cached(self, *, ttl_sec: float = 3.0) -> Optional[float]:
+        now_ms = int(time.time() * 1000)
+        if self._real_equity_cache_usdc is not None and now_ms - int(self._real_equity_cache_ts_ms or 0) <= int(ttl_sec * 1000):
+            return float(self._real_equity_cache_usdc)
+        if self.poly_client is None:
+            return None
+        equity = self.poly_client.fetch_account_equity_usdc()
+        if equity is not None:
+            self._real_equity_cache_usdc = float(equity)
+            self._real_equity_cache_ts_ms = now_ms
+        return equity
+
     def _apply_real_fok_ticket(self, state: dict[str, Any], ticket: Optional[OrderTicket]) -> None:
         now_ms = int(time.time() * 1000)
         state["attempt_in_flight"] = False
@@ -1144,6 +1190,9 @@ class LiveRunner:
         state["last_ticket_state"] = ticket.state.value
         state["last_error"] = ticket.last_error
         state["last_order_id"] = ticket.exchange_order_id
+        _SIM_CURRENT["real_last_ticket_state"] = ticket.state.value
+        _SIM_CURRENT["real_last_error"] = ticket.last_error
+        _SIM_CURRENT["real_last_order_id"] = ticket.exchange_order_id
         matched = max(0.0, float(ticket.filled_size_shares or 0.0))
         if ticket.state in (OrderState.FILLED, OrderState.PARTIAL) and matched <= 1e-9:
             state["locked"] = True
@@ -1220,6 +1269,10 @@ class LiveRunner:
         latest_target_shares = float(target_quote) / max(float(limit_price), 0.01)
         if state is None and latest_target_shares + 1e-9 < min_shares:
             logger.info("real window skip below min shares window_id=%s shares=%.4f", window_id, latest_target_shares)
+            _SIM_CURRENT["real_status"] = "real_below_min_shares"
+            _SIM_CURRENT["real_decision_stage"] = "submit_precheck_min_shares"
+            _SIM_CURRENT["real_target_shares"] = round(float(latest_target_shares), 4)
+            _SIM_CURRENT["real_min_shares"] = round(float(min_shares), 4)
             return None
 
         if state is None:
@@ -1381,16 +1434,27 @@ class LiveRunner:
         if attempt_quote + 1e-9 < min_quote:
             state["locked"] = True
             state["lock_reason"] = "dust_remaining"
+            _SIM_CURRENT["real_status"] = "real_attempt_quote_below_min"
+            _SIM_CURRENT["real_decision_stage"] = "submit_precheck_min_quote"
+            _SIM_CURRENT["real_attempt_quote"] = round(float(attempt_quote), 4)
+            _SIM_CURRENT["real_min_order_quote"] = round(float(min_quote), 4)
             return None
         if attempt_shares + 1e-9 < min_shares:
             state["last_error"] = "waiting_min_shares_at_current_price"
             state["last_wait_price"] = float(state["limit_price"])
+            _SIM_CURRENT["real_status"] = "real_waiting_min_shares"
+            _SIM_CURRENT["real_decision_stage"] = "submit_precheck_min_shares"
+            _SIM_CURRENT["real_attempt_shares"] = round(float(attempt_shares), 4)
+            _SIM_CURRENT["real_min_shares"] = round(float(min_shares), 4)
             return None
 
         book = self.poly_client.fetch_book(token_id) if self.poly_client is not None else {}
         if book.get("stale") or book.get("best_ask") is None:
             state["last_error"] = "depth_precheck_stale_or_no_ask"
             state["last_precheck_ts_ms"] = int(time.time() * 1000)
+            _SIM_CURRENT["real_status"] = "real_depth_unavailable"
+            _SIM_CURRENT["real_decision_stage"] = "depth_precheck"
+            _SIM_CURRENT["real_block_reason"] = "stale_or_no_ask"
             return None
         live_ask = float(book.get("best_ask") or 0.0)
         live_ask_size = float(book.get("best_ask_size") or 0.0)
@@ -1399,6 +1463,10 @@ class LiveRunner:
             state["last_live_ask"] = live_ask
             state["last_limit_price"] = float(state["limit_price"])
             state["last_precheck_ts_ms"] = int(time.time() * 1000)
+            _SIM_CURRENT["real_status"] = "real_ask_moved_above_limit"
+            _SIM_CURRENT["real_decision_stage"] = "depth_precheck"
+            _SIM_CURRENT["real_live_ask"] = round(float(live_ask), 4)
+            _SIM_CURRENT["real_limit_px"] = round(float(state["limit_price"]), 4)
             return None
         if live_ask_size + 1e-9 < attempt_shares:
             state["last_error"] = "depth_below_min_chunk"
@@ -1406,6 +1474,11 @@ class LiveRunner:
             state["last_live_ask_size"] = live_ask_size
             state["last_attempt_shares_needed"] = float(attempt_shares)
             state["last_precheck_ts_ms"] = int(time.time() * 1000)
+            _SIM_CURRENT["real_status"] = "real_depth_below_chunk"
+            _SIM_CURRENT["real_decision_stage"] = "depth_precheck"
+            _SIM_CURRENT["real_live_ask"] = round(float(live_ask), 4)
+            _SIM_CURRENT["real_live_ask_size"] = round(float(live_ask_size), 4)
+            _SIM_CURRENT["real_attempt_shares"] = round(float(attempt_shares), 4)
             return None
 
         state["attempt_seq"] = int(state.get("attempt_seq", 0)) + 1
@@ -1413,6 +1486,10 @@ class LiveRunner:
         client_order_id = f"{window_id}:{state['direction']}:fok:{state['attempt_seq']}"
         state["last_client_order_id"] = client_order_id
         state["last_attempt_shares"] = float(attempt_shares)
+        _SIM_CURRENT["real_decision_stage"] = "fok_submit_call"
+        _SIM_CURRENT["real_client_order_id"] = client_order_id
+        _SIM_CURRENT["real_attempt_shares"] = round(float(attempt_shares), 4)
+        _SIM_CURRENT["real_attempt_quote"] = round(float(attempt_quote), 4)
         order_note = f"{note} nofill={no_fill_count} chunk_shares={attempt_shares:.4f}"
         if state.get("decision_meta"):
             order_note = f"{order_note} meta={json.dumps(state.get('decision_meta'), sort_keys=True, default=str)[:500]}"
