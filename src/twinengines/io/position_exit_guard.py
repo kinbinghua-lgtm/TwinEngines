@@ -55,6 +55,9 @@ class PositionExitGuardCfg:
     held_prob_floor_exit: float = 0.35
     exit_retry_cooldown_sec: float = 2.0
     max_exit_attempts_per_position: int = 8
+    early_entry_reversal_exit_sec: float = 45.0
+    early_entry_adverse_prob_exit: float = 0.58
+    early_entry_prob_gap_exit: float = 0.16
 
 
 class PositionExitGuard:
@@ -256,8 +259,16 @@ class PositionExitGuard:
         if pos.closed:
             return
         prob_gap = float(adverse_prob) - float(held_prob)
+        now_ms = int(ts_ms or time.time() * 1000)
+        age_sec = max(0.0, (now_ms - int(pos.opened_ts_ms or now_ms)) / 1000.0)
         reason: Optional[str] = None
-        if adverse_prob >= float(self.cfg.catastrophic_adverse_prob_exit) and held_prob <= max(float(self.cfg.held_prob_floor_exit), 1.0 - float(self.cfg.catastrophic_adverse_prob_exit)):
+        if (
+            age_sec <= float(self.cfg.early_entry_reversal_exit_sec)
+            and adverse_prob >= float(self.cfg.early_entry_adverse_prob_exit)
+            and prob_gap >= float(self.cfg.early_entry_prob_gap_exit)
+        ):
+            reason = "early_entry_reversal"
+        elif adverse_prob >= float(self.cfg.catastrophic_adverse_prob_exit) and held_prob <= max(float(self.cfg.held_prob_floor_exit), 1.0 - float(self.cfg.catastrophic_adverse_prob_exit)):
             reason = "catastrophic_probability_reversal"
         elif adverse_prob >= float(self.cfg.strong_adverse_prob_exit) and prob_gap >= float(self.cfg.strong_prob_gap_exit):
             reason = "direction_probability_reversed"
@@ -265,9 +276,9 @@ class PositionExitGuard:
             reason = "held_probability_decay"
         if reason is None:
             return
-        if pos.strong_reverse_triggered and reason in ("direction_probability_reversed", "catastrophic_probability_reversal"):
+        if pos.strong_reverse_triggered and reason in ("direction_probability_reversed", "catastrophic_probability_reversal", "early_entry_reversal"):
             return
-        if reason in ("direction_probability_reversed", "catastrophic_probability_reversal"):
+        if reason in ("direction_probability_reversed", "catastrophic_probability_reversal", "early_entry_reversal"):
             pos.strong_reverse_triggered = True
         pos.exit_intent_reason = reason
         pos.last_reason = reason
@@ -279,8 +290,9 @@ class PositionExitGuard:
             "held_prob": round(float(held_prob), 4),
             "adverse_prob": round(float(adverse_prob), 4),
             "prob_gap": round(float(prob_gap), 4),
+            "position_age_sec": round(float(age_sec), 2),
             "max_held_prob_seen": round(float(pos.max_held_prob_seen or 0.0), 4),
-            "ts_ms": int(ts_ms or time.time() * 1000),
+            "ts_ms": now_ms,
         })
         self._exit_5share_loop(pos, reason=reason)
 
