@@ -777,8 +777,9 @@ class LiveRunner:
             "real_status", "real_decision_stage", "real_block_reason", "real_skip_reason",
             "real_target_quote", "real_attempt_quote", "real_kelly_raw_quote", "real_platform_min_quote",
             "real_min_5_shares_quote", "real_min_order_quote", "real_limit_px", "real_window_cap",
-            "real_min_abs_boost_available", "real_min_abs_boost_used", "real_platform_min_boost_available",
-            "real_platform_min_boost_used", "real_min_share_exception", "real_min_share_exception_reason",
+            "real_min_abs_boost_available", "real_min_abs_boost_cap", "real_min_abs_boost_used", "real_platform_min_boost_available",
+            "real_platform_min_boost_used", "real_pre_window_cap", "real_ratio_limited_cap",
+            "real_min_share_exception", "real_min_share_exception_reason",
             "status", "fill_amt", "fill_ask", "fill_ev", "fill_edge", "fill_kelly_raw",
         )
         for _stale_key in stale_decision_keys:
@@ -1169,12 +1170,14 @@ class LiveRunner:
                                     and float(limit_px) < 0.90
                                 )
                                 min_share_exception = bool(trade_intent == "HEDGE" or high_prob_min_share_exception)
+                                platform_min_one_time_exception = bool(one_time_boost_available and float(real_kelly_total) <= platform_min_quote + 1e-9)
+                                min_share_exception = bool(min_share_exception or platform_min_one_time_exception)
                                 boost_cap = window_abs_cap if min_share_exception else ratio_limited_cap
                                 _SIM_CURRENT["real_platform_min_boost_available"] = bool(one_time_boost_available)
                                 _SIM_CURRENT["real_pre_window_cap"] = round(float(boost_cap), 4) if math.isfinite(float(boost_cap)) else None
                                 _SIM_CURRENT["real_ratio_limited_cap"] = round(float(ratio_limited_cap), 4) if math.isfinite(float(ratio_limited_cap)) else None
                                 _SIM_CURRENT["real_min_share_exception"] = bool(min_share_exception)
-                                _SIM_CURRENT["real_min_share_exception_reason"] = "hedge" if has_opposite_position else "high_prob_price" if high_prob_min_share_exception else None
+                                _SIM_CURRENT["real_min_share_exception_reason"] = "hedge" if has_opposite_position else "high_prob_price" if high_prob_min_share_exception else "one_time_platform_min_boost" if platform_min_one_time_exception else None
                                 if boost_cap >= platform_min_quote and one_time_boost_available:
                                     real_kelly_total = platform_min_quote
                                     if trade_intent != "HEDGE":
@@ -1200,11 +1203,16 @@ class LiveRunner:
                                     and float(limit_px) < 0.90
                                 )
                                 min_share_exception = bool(trade_intent == "HEDGE" or high_prob_min_share_exception)
+                                platform_min_one_time_exception = bool(
+                                    bool(_SIM_CURRENT.get("real_platform_min_boost_used"))
+                                    and float(real_kelly_total) <= platform_min_quote + 1e-9
+                                )
+                                min_share_exception = bool(min_share_exception or platform_min_one_time_exception)
                                 hard_window_cap = min(window_abs_cap, window_ratio_cap)
                                 if min_share_exception and float(real_kelly_total) <= platform_min_quote + 1e-9:
                                     hard_window_cap = window_abs_cap
                                     _SIM_CURRENT["real_min_share_exception"] = True
-                                    _SIM_CURRENT["real_min_share_exception_reason"] = "hedge" if has_opposite_position else "high_prob_price"
+                                    _SIM_CURRENT["real_min_share_exception_reason"] = "hedge" if has_opposite_position else "high_prob_price" if high_prob_min_share_exception else "one_time_platform_min_boost" if platform_min_one_time_exception else None
                                 if hard_window_cap < platform_min_quote:
                                     _SIM_CURRENT["real_status"] = "real_window_cap_below_platform_min"
                                     _SIM_CURRENT["real_decision_stage"] = "window_cap_check"

@@ -688,11 +688,27 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
             c("submit", "真实FOK", "pass" if real_status == "real_fok_evaluated" else "warn", f"状态={real_status}；stage={cw.get('real_decision_stage','--')}；block={cw.get('real_block_reason','--')}")
         ])
     fail = next((x for x in real if x["status"] == "fail"), None)
-    if real_status == "real_fok_evaluated": reason = "已进入真实 FOK 下单评估，等待订单审计确认"
-    elif filled: reason = "真实 FOK 已成交"
-    elif T is not None and T < 15: reason = "未提交：当前窗口剩余时间少于 15 秒"
-    elif "Kelly<2.5" in real_status: reason = "未提交：建议下注金额低于 $2.50，或账户余额/cap 不足"
-    else: reason = f"未提交：{fail['label']}未通过" if fail else f"未提交：{real_status}"
+    if real_status == "real_fok_evaluated":
+        reason = "已进入真实 FOK 下单评估，等待订单审计确认"
+    elif filled:
+        reason = "真实 FOK 已成交"
+    elif T is not None and T < 15:
+        reason = "未提交：当前窗口剩余时间少于 15 秒"
+    elif intent_allowed is False:
+        reason = f"未提交：阶段门控未通过（{intent_reason}）"
+    elif real_status == "real_Kelly<2.5":
+        boost_available = cw.get("real_min_abs_boost_available")
+        boost_cap = cw.get("real_min_abs_boost_cap")
+        if boost_available is False:
+            reason = "未提交：本窗口 $2.50 boost 已用过或不可用"
+        elif boost_cap is not None:
+            reason = f"未提交：建议下注金额低于 $2.50，且当前允许 boost cap={boost_cap} 不足"
+        else:
+            reason = "未提交：建议下注金额低于 $2.50，且无法提升到最小下单金额"
+    elif real_status in ("real_platform_min_not_met", "real_window_cap_below_platform_min"):
+        reason = f"未提交：平台最小单/窗口 cap 未通过（{cw.get('real_block_reason','--')}）"
+    else:
+        reason = f"未提交：{fail['label']}未通过" if fail else f"未提交：{real_status}"
     fill = safe_float(cw.get("fill_amt") or cw.get("fill_amount")); shadow_status = str(cw.get("status") or "等待")
     shadow = [c("time","时间条件","pass" if T is not None and T >= 15 else "fail", f"T={T:.0f}s >= 15s" if T is not None else "无数据"), c("intent","阶段-意图门控", "pass" if intent_allowed is True else "fail" if intent_allowed is False else "unknown", f"{intent_reason}"), c("ev","动态 EV 条件","pass" if req_ev is not None and ev is not None and ev >= req_ev else "fail" if req_ev is not None and ev is not None else "unknown", f"EV={ev if ev is not None else '--'}，当前要求={req_ev if req_ev is not None else '--'}"), c("kelly","模拟 Kelly 条件","pass" if fill and fill >= 2.5 else "warn", f"影子 fill={fill if fill is not None else '--'}")]
     return {"ok": True, "window_id": wid, "window_label": window_label(wid), "seq": seq, "seq_display": seq_display, "seq_total": seq_total, "prefix": seq, "T_remaining": T, "server_ts_ms": int(time.time() * 1000), "p_up": p_up, "p_down": p_down, "ev_up": ev_up, "ev_down": ev_down, "best_dir": best_dir, "best_dir_label": dir_label, "decision_mode": "方向概率", "evaluated_direction": best_dir, "evaluated_direction_label": dir_label, "evaluated_ask": ask, "ask_up": ask_up, "ask_down": ask_down, "best_ev": ev, "phase_boxes": _phase_boxes_for_decision(phase_num, _phase_box_condition_subset(phase_num, real)), "common_conditions": [x for x in real if x.get("key") in {"time", "startup", "book"}], "real": {"status": real_status, "reason": reason, "target_quote": real_target, "target_shares": shares, "filled_order": filled, "conditions": real}, "shadow": {"status": shadow_status, "reason": str(cw.get("reason") or shadow_status), "fill_amount": fill, "ev": ev, "equity": sm.get("shadow_equity_usdc"), "conditions": shadow}, "source": "current_window.json + derived"}
