@@ -573,18 +573,51 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     intent_allowed = cw.get("intent_allowed")
     def c(k,l,s,t): return {"key": k, "label": l, "status": s, "text": t}
     real = [
-        c("phase","当前生命周期阶段","pass", f"Phase={phase}；意图={trade_intent}；策略={phase_policy}"),
-        c("book","盘口是否能报价","pass" if ask_up and ask_down else "fail", f"UP 买价={ask_up}，DOWN 买价={ask_down}；当前选中 {dir_label}，价格={ask}"),
-        c("intent","阶段-意图门控是否通过","pass" if intent_allowed is True else "fail" if intent_allowed is False else "unknown", f"{intent_reason}"),
-        c("prob","动态概率条件","pass" if req_prob is not None and best_prob is not None and best_prob >= req_prob else "fail" if req_prob is not None and best_prob is not None else "unknown", f"当前={best_prob if best_prob is not None else '--'}；本阶段/意图要求 >= {req_prob if req_prob is not None else '--'}"),
-        c("edge","edge 条件","pass", f"已取消准入限制；仅展示当前 edge={best_edge if best_edge is not None else '--'}"),
-        c("ev","动态 EV 条件","pass" if req_ev is not None and ev is not None and ev >= req_ev else "fail" if req_ev is not None and ev is not None else "unknown", f"UP EV={ev_up if ev_up is not None else '--'}；DOWN EV={ev_down if ev_down is not None else '--'}；当前={ev if ev is not None else '--'}；要求 >= {req_ev if req_ev is not None else '--'}"),
-        c("kelly_raw","动态 KellyRaw 条件","pass" if req_kelly is not None and best_kelly is not None and best_kelly >= req_kelly else "fail" if req_kelly is not None and best_kelly is not None else "unknown", f"当前={best_kelly if best_kelly is not None else '--'}；要求 >= {req_kelly if req_kelly is not None else '--'}"),
-        c("kelly","真实账户建议下注额是否够最小单","pass" if real_target is not None and real_target >= 2.5 else "fail" if "Kelly<2.5" in real_status else "unknown", f"按真实余额和胜率算，{dir_label} 建议下注={real_target if real_target is not None else '--'}；低于 $2.50 不下"),
-        c("cap","账户资金上限是否允许下单","pass" if cap is not None and cap >= 2.5 else "fail" if cap is not None else "unknown", f"当前档位 {cw.get('sizing_tier') or 'base'}：Kelly fraction={sizing_fraction:.2f}，单窗口最多用真实余额的 {max_stake_ratio:.0%}，当前上限={cap:.2f}，至少要覆盖 $2.50" if cap is not None else "真实余额不可用"),
-        c("min_shares","是否满足 Polymarket 最少 5 shares","pass" if shares is not None and shares >= 5 else "fail" if shares is not None else "unknown", f"按 {dir_label} 当前价格估算可买 shares={shares:.2f}；少于 5 shares 不提交" if shares is not None else "还没有目标金额或本方向价格"),
-        c("submit","是否已经进入真实 FOK 下单流程","pass" if real_status == "real_fok_evaluated" else "warn", f"当前真实盘状态：{real_status}；只有前面条件都过才会提交 FOK"),
+        c("phase", "当前阶段/通道", "pass", f"Phase={phase}；意图={trade_intent}；策略={phase_policy}"),
+        c("time", "时间", "pass" if T is not None and T >= 15 else "fail" if T is not None else "unknown", f"T={T if T is not None else '--'}s；要求 >= 15s"),
+        c("startup", "启动保护", "fail" if bool(cw.get('startup_observe_only')) else "pass", f"startup_observe_only={bool(cw.get('startup_observe_only'))}；missed={cw.get('startup_missed_sec', '--')}s"),
+        c("book", "盘口", "pass" if ask_up and ask_down else "fail", f"UP={ask_up}，DOWN={ask_down}；当前 {dir_label} ask={ask}"),
     ]
+    if trade_intent == "ENTRY_VALUE":
+        direction_text = "EV通道：p>=0.35 的方向参与EV对比，允许 p<0.5"
+    elif trade_intent in ("ENTRY_TREND", "HEDGE"):
+        direction_text = "TREND通道：p>=0.60 的方向参与EV对比"
+    elif trade_intent == "ADD":
+        direction_text = "ADD通道：已有同向仓位，按当前方向补仓规则判断"
+    else:
+        direction_text = "当前无可交易通道"
+    real.append(c("direction_select", "方向选择", "pass" if best_dir else "unknown", f"{direction_text}；当前选中 {dir_label}"))
+    real.append(c("intent", "阶段门控", "pass" if intent_allowed is True else "fail" if intent_allowed is False else "unknown", f"{intent_reason}"))
+    if req_prob is not None and req_prob > 0:
+        real.append(c("prob", "概率", "pass" if best_prob is not None and best_prob >= req_prob else "fail" if best_prob is not None else "unknown", f"当前={best_prob if best_prob is not None else '--'}；要求 >= {req_prob}"))
+    ask_checks = []
+    if cw.get('value_max_ask') is not None:
+        ask_checks.append(("value_max", "<=", float(cw.get('value_max_ask'))))
+    if cw.get('trend_max_ask') is not None:
+        ask_checks.append(("trend_max", "<=", float(cw.get('trend_max_ask'))))
+    if cw.get('trend_max_ask_exclusive') is not None:
+        ask_checks.append(("trend_max_excl", "<", float(cw.get('trend_max_ask_exclusive'))))
+    if cw.get('add_max_ask_exclusive') is not None:
+        ask_checks.append(("add_max_excl", "<", float(cw.get('add_max_ask_exclusive'))))
+    if ask_checks:
+        ask_ok = ask is not None and all((ask <= v if op == "<=" else ask < v) for _, op, v in ask_checks)
+        ask_text = "；".join(f"{name} {op} {v}" for name, op, v in ask_checks)
+        real.append(c("ask_rule", "价格", "pass" if ask_ok else "fail" if ask is not None else "unknown", f"当前ask={ask if ask is not None else '--'}；{ask_text}"))
+    required_rising = safe_float(cw.get('p_rising_required_sec'))
+    if required_rising is not None and required_rising > 0:
+        rising_ok = (int(required_rising) == 5 and bool(cw.get('p_rising_5s'))) or (int(required_rising) == 8 and bool(cw.get('p_rising_8s')))
+        real.append(c("rising", "连续确认", "pass" if rising_ok else "fail", f"要求={int(required_rising)}s；5s={bool(cw.get('p_rising_5s'))}；8s={bool(cw.get('p_rising_8s'))}"))
+    if req_ev is not None and req_ev > -0.5:
+        real.append(c("ev", "EV", "pass" if ev is not None and ev >= req_ev else "fail" if ev is not None else "unknown", f"UP={ev_up if ev_up is not None else '--'}；DOWN={ev_down if ev_down is not None else '--'}；当前={ev if ev is not None else '--'}；要求 >= {req_ev}"))
+    if bool(cw.get("has_same_position")) and bool(cw.get("has_opposite_position")):
+        real.append(c("hedged_lock", "双边锁定", "fail", "已双边持仓，禁止继续加仓"))
+    if intent_allowed is True:
+        real.extend([
+            c("kelly", "下注金额", "pass" if real_target is not None and real_target >= 2.5 else "fail" if "Kelly<2.5" in real_status else "unknown", f"Kelly建议={cw.get('real_kelly_raw_quote','--')}；目标={real_target if real_target is not None else '--'}；$2.50 boost可用={cw.get('real_min_abs_boost_available','--')}；已用={cw.get('real_min_abs_boost_used','--')}"),
+            c("cap", "资金上限", "pass" if cap is not None and cap >= 2.5 else "fail" if cap is not None else "unknown", f"档位={cw.get('sizing_tier') or 'base'}；fraction={sizing_fraction:.2f}；ratio_cap={max_stake_ratio:.0%}；当前上限={cap:.2f}；绝对cap={cw.get('real_max_window_risk_usdc','--')}" if cap is not None else "真实余额不可用"),
+            c("platform_min", "平台最小单", "pass" if real_target is not None and cw.get('real_platform_min_quote') is not None and real_target >= float(cw.get('real_platform_min_quote') or 0) else "fail" if cw.get('real_platform_min_quote') is not None else "unknown", f"platform_min={cw.get('real_platform_min_quote','--')}；5shares金额={cw.get('real_min_5_shares_quote','--')}；boost可用={cw.get('real_platform_min_boost_available','--')}；已用={cw.get('real_platform_min_boost_used','--')}"),
+            c("submit", "真实FOK", "pass" if real_status == "real_fok_evaluated" else "warn", f"状态={real_status}；stage={cw.get('real_decision_stage','--')}；block={cw.get('real_block_reason','--')}")
+        ])
     fail = next((x for x in real if x["status"] == "fail"), None)
     if real_status == "real_fok_evaluated": reason = "已进入真实 FOK 下单评估，等待订单审计确认"
     elif filled: reason = "真实 FOK 已成交"

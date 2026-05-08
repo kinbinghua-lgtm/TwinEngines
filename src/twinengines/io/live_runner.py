@@ -899,6 +899,7 @@ class LiveRunner:
         _SIM_CURRENT["intent_allowed"] = bool(lifecycle["allowed"])
         _SIM_CURRENT["intent_reason"] = lifecycle["reason"]
         _SIM_CURRENT["lifecycle_phase_policy"] = lifecycle["phase_policy"]
+        _SIM_CURRENT.update(dict(lifecycle.get("meta") or {}))
         _SIM_CURRENT["is_hedge"] = trade_intent == "HEDGE"
         _SIM_CURRENT["is_add"] = trade_intent == "ADD"
         _SIM_CURRENT["is_value_entry"] = trade_intent == "ENTRY_VALUE"
@@ -1754,9 +1755,9 @@ class LiveRunner:
                 ok = p_side >= req_prob and ev >= req_ev
                 return result(ok, "allowed_hedge" if ok else "hedge_quality_not_met", "hedge_ev_only", req_prob, req_edge, req_ev, req_kelly)
             if phase == 2:
-                req_prob, req_edge, req_ev, req_kelly = 0.68, -1.0, 0.08, 0.0
+                req_prob, req_edge, req_ev, req_kelly = 0.60, -1.0, 0.08, 0.0
             else:
-                req_prob, req_edge, req_ev, req_kelly = 0.70, -1.0, 0.08, 0.0
+                req_prob, req_edge, req_ev, req_kelly = 0.60, -1.0, 0.08, 0.0
             ok = p_side >= req_prob and ev >= req_ev
             return result(ok, "allowed_hedge" if ok else "hedge_quality_not_met", "hedge_priority", req_prob, req_edge, req_ev, req_kelly)
 
@@ -1792,16 +1793,16 @@ class LiveRunner:
             return result(False, "phase1_unreachable_trend", "phase1_ev_only", 0.35, -1.0, 0.40, 0.0)
         if phase == 2:
             if ask >= 0.72:
-                req_prob, req_edge, req_ev, req_kelly = 0.82, -1.0, 0.08, 0.0
+                req_prob, req_edge, req_ev, req_kelly = 0.60, -1.0, 0.08, 0.0
                 ok = p_side >= req_prob and ask < 0.80 and ev >= req_ev
                 return result(ok, "allowed_phase2_high_price_trend" if ok else "phase2_high_price_trend_shadow_only", "phase2_high_price_confirmed", req_prob, req_edge, req_ev, req_kelly, {"high_price_min_ask": 0.72, "trend_max_ask_exclusive": 0.80})
-            req_prob, req_edge, req_ev, req_kelly = 0.68, -1.0, 0.08, 0.0
+            req_prob, req_edge, req_ev, req_kelly = 0.60, -1.0, 0.08, 0.0
             ok = p_side >= req_prob and ask <= 0.72 and ev >= req_ev
             return result(ok, "allowed_phase2_trend" if ok else "phase2_trend_quality_not_met", "phase2_main_trend", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.72})
 
-        req_prob, req_edge, req_ev, req_kelly = 0.75, -1.0, 0.10, 0.0
+        req_prob, req_edge, req_ev, req_kelly = 0.60, -1.0, 0.10, 0.0
         if phase >= 4:
-            req_prob, req_edge, req_ev, req_kelly = 0.80, -1.0, 0.12, 0.0
+            req_prob, req_edge, req_ev, req_kelly = 0.60, -1.0, 0.12, 0.0
             ok = p_side >= req_prob and ask <= 0.65 and ev >= req_ev and bool(p_rising_8s)
             return result(ok, "allowed_phase4_rising_trend" if ok else "phase4_trend_shadow_only", "phase4_rising_confirm", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.65, "p_rising_required_sec": 8})
         ok = p_side >= req_prob and ask <= 0.70 and ev >= req_ev and bool(p_rising_5s)
@@ -1930,7 +1931,7 @@ class LiveRunner:
         elif phase == 2:
             min_dir_prob = 0.35
         else:
-            min_dir_prob = 0.55
+            min_dir_prob = 0.60
         up_allowed = p_up >= min_dir_prob
         down_allowed = p_down >= min_dir_prob
         if not up_allowed and not down_allowed:
