@@ -844,6 +844,27 @@ class LiveRunner:
         has_opposite_position = opposite_key in win_target or float(opposite_real.get("filled_shares", 0.0) or 0.0) > 1e-9
         same_real = _REAL_WINDOW_ORDERS.get(dir_key) or {}
         has_same_position = dir_key in win_target or float(same_real.get("filled_shares", 0.0) or 0.0) > 1e-9
+        is_hedged_locked = bool(has_same_position and has_opposite_position)
+        if is_hedged_locked:
+            _SIM_CURRENT["best_dir"] = best_dir
+            _SIM_CURRENT["best_side_prob"] = round(best_side_prob, 4)
+            _SIM_CURRENT["best_edge"] = round(best_edge, 4)
+            _SIM_CURRENT["best_ev"] = round(best_ev_simple, 4)
+            _SIM_CURRENT["trade_intent"] = "NO_TRADE"
+            _SIM_CURRENT["intent_allowed"] = False
+            _SIM_CURRENT["intent_reason"] = "hedged_locked_no_more_add"
+            _SIM_CURRENT["lifecycle_phase_policy"] = "hold_hedged_to_settlement"
+            _SIM_CURRENT["status"] = "hedged_locked_no_more_add"
+            _record_decision(0, "rejected", "hedged_locked_no_more_add", {
+                "trade_intent": "NO_TRADE",
+                "intent_allowed": False,
+                "intent_reason": "hedged_locked_no_more_add",
+                "lifecycle_phase_policy": "hold_hedged_to_settlement",
+                "has_same_position": True,
+                "has_opposite_position": True,
+            })
+            self._write_current_window_snapshot()
+            return
 
         # 5-minute lifecycle strategy: classify intent first, then apply phase-aware policy.
         lifecycle = self._evaluate_lifecycle_intent_gate(
@@ -1658,14 +1679,13 @@ class LiveRunner:
             return "HEDGE"
         if has_same_position:
             return "ADD"
-        if ask <= 0.45 and p_side >= 0.35 and edge >= 0.10 and ev >= 0.40 and kelly_raw >= 0.08:
+        if phase <= 0 and p_side >= 0.40 and ask <= 0.35:
             return "ENTRY_VALUE"
-        if ask <= 0.35 and edge >= 0.12 and ev >= 0.30 and kelly_raw >= 0.12:
-            if phase <= 0 and p_side >= 0.40:
-                return "ENTRY_VALUE"
-            if phase == 1 and p_side >= 0.35:
-                return "ENTRY_VALUE"
-        if phase >= 3 and ask <= 0.25 and p_side >= 0.45 and edge >= 0.20 and ev >= 0.80 and kelly_raw >= 0.15:
+        if phase == 1 and p_side >= 0.35 and ask <= 0.40:
+            return "ENTRY_VALUE"
+        if phase == 2 and p_side >= 0.35 and ask <= 0.45:
+            return "ENTRY_VALUE"
+        if phase >= 3 and ask <= 0.25 and p_side >= 0.45:
             return "ENTRY_VALUE"
         return "ENTRY_TREND"
 
@@ -1743,19 +1763,19 @@ class LiveRunner:
         if intent == "ENTRY_VALUE":
             if phase <= 0:
                 req_prob, req_edge, req_ev, req_kelly = 0.40, 0.15, 0.60, 0.12
-                ok = p_side >= req_prob and ask <= 0.25 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
-                return result(ok, "allowed_phase0_value" if ok else "phase0_value_quality_not_met", "phase0_value_probe", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.25})
+                ok = p_side >= req_prob and ask <= 0.35 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+                return result(ok, "allowed_phase0_value" if ok else "phase0_value_quality_not_met", "phase0_value_ev_first", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.35})
             if phase == 1:
                 req_prob, req_edge, req_ev, req_kelly = 0.35, 0.12, 0.50, 0.08
-                ok = p_side >= req_prob and ask <= 0.35 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
-                return result(ok, "allowed_phase1_value" if ok else "phase1_value_quality_not_met", "phase1_value_probe", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.35})
+                ok = p_side >= req_prob and ask <= 0.40 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+                return result(ok, "allowed_phase1_value" if ok else "phase1_value_quality_not_met", "phase1_value_ev_first", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.40})
             if phase >= 3:
                 req_prob, req_edge, req_ev, req_kelly = 0.45, 0.20, 0.80, 0.15
                 ok = p_side >= req_prob and ask <= 0.25 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
                 return result(ok, "allowed_phase3_tail_value" if ok else "phase3_tail_value_quality_not_met", "phase3_tail_value_tiny", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.25})
             req_prob, req_edge, req_ev, req_kelly = 0.35, 0.10, 0.40, 0.08
             ok = p_side >= req_prob and ask <= 0.45 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
-            return result(ok, "allowed_phase2_value" if ok else "phase2_value_quality_not_met", "phase2_value_probe", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.45})
+            return result(ok, "allowed_phase2_value" if ok else "phase2_value_quality_not_met", "phase2_value_ev_first", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.45})
 
         if phase <= 0:
             req_prob, req_edge, req_ev, req_kelly = 0.80, 0.15, 0.25, 0.18
