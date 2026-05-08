@@ -131,6 +131,7 @@ class LiveRunner:
     _real_equity_cache_usdc: Optional[float] = None
     _real_equity_cache_ts_ms: int = 0
     _platform_min_boost_used: set[str] = field(default_factory=set)
+    _prob_history: dict[str, list[tuple[int, float, float]]] = field(default_factory=dict)  # window_id -> [(ts_ms, p_up, p_down)]
 
     # ---------------- 工厂 ----------------
 
@@ -740,6 +741,7 @@ class LiveRunner:
         d_abs = float(event.get("d_abs_pct") or 0)
         d_signed = float(event.get("d_signed_pct") or 0)
         best_prob_dir = "up" if p_up >= p_down else "down"
+        self._record_probability_history(window_id, p_up=p_up, p_down=p_down)
         if self.exit_guard is not None and is_real_mode and window_id:
             try:
                 self.exit_guard.observe_probability(window_id=window_id, p_up=p_up, p_down=p_down)
@@ -853,6 +855,8 @@ class LiveRunner:
             kelly_raw=best_kelly_raw,
             has_same_position=has_same_position,
             has_opposite_position=has_opposite_position,
+            p_rising_5s=self._is_probability_rising(window_id, best_dir, seconds=5),
+            p_rising_8s=self._is_probability_rising(window_id, best_dir, seconds=8),
         )
         trade_intent = str(lifecycle["trade_intent"])
         req_edge = float(lifecycle["req_edge"])
@@ -1615,6 +1619,29 @@ class LiveRunner:
         except Exception as e:
             logger.debug("write_sim_record failed: %s", e)
 
+    def _record_probability_history(self, window_id: str, *, p_up: float, p_down: float) -> None:
+        if not window_id:
+            return
+        now_ms = int(time.time() * 1000)
+        hist = self._prob_history.setdefault(str(window_id), [])
+        hist.append((now_ms, float(p_up), float(p_down)))
+        cutoff = now_ms - 20_000
+        self._prob_history[str(window_id)] = [x for x in hist if int(x[0]) >= cutoff]
+        for key in list(self._prob_history.keys()):
+            if key != str(window_id):
+                self._prob_history.pop(key, None)
+
+    def _is_probability_rising(self, window_id: str, direction: str, *, seconds: int) -> bool:
+        hist = self._prob_history.get(str(window_id)) or []
+        if len(hist) < max(3, int(seconds) - 1):
+            return False
+        now_ms = int(time.time() * 1000)
+        recent = [x for x in hist if int(x[0]) >= now_ms - int(seconds) * 1000]
+        if len(recent) < max(3, int(seconds) - 1):
+            return False
+        vals = [float(x[1] if direction == "up" else x[2]) for x in recent[-int(seconds):]]
+        return all(vals[i] >= vals[i - 1] - 1e-9 for i in range(1, len(vals))) and vals[-1] > vals[0]
+
     @staticmethod
     def _classify_lifecycle_trade_intent(
         *,
@@ -1631,10 +1658,12 @@ class LiveRunner:
             return "HEDGE"
         if has_same_position:
             return "ADD"
+        if ask <= 0.45 and p_side >= 0.35 and edge >= 0.10 and ev >= 0.40 and kelly_raw >= 0.08:
+            return "ENTRY_VALUE"
         if ask <= 0.35 and edge >= 0.12 and ev >= 0.30 and kelly_raw >= 0.12:
-            if phase <= 0 and p_side >= 0.45:
+            if phase <= 0 and p_side >= 0.40:
                 return "ENTRY_VALUE"
-            if phase == 1 and p_side >= 0.55:
+            if phase == 1 and p_side >= 0.35:
                 return "ENTRY_VALUE"
         if phase >= 3 and ask <= 0.25 and p_side >= 0.45 and edge >= 0.20 and ev >= 0.80 and kelly_raw >= 0.15:
             return "ENTRY_VALUE"
@@ -1652,6 +1681,8 @@ class LiveRunner:
         kelly_raw: float,
         has_same_position: bool,
         has_opposite_position: bool,
+        p_rising_5s: bool = False,
+        p_rising_8s: bool = False,
     ) -> dict[str, Any]:
         intent = cls._classify_lifecycle_trade_intent(
             phase=phase,
@@ -1668,6 +1699,8 @@ class LiveRunner:
             "trade_intent": intent,
             "has_same_position": bool(has_same_position),
             "has_opposite_position": bool(has_opposite_position),
+            "p_rising_5s": bool(p_rising_5s),
+            "p_rising_8s": bool(p_rising_8s),
         }
 
         def result(allowed: bool, reason: str, policy: str, req_prob: float, req_edge: float, req_ev: float, req_kelly: float, extra: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -1709,41 +1742,45 @@ class LiveRunner:
 
         if intent == "ENTRY_VALUE":
             if phase <= 0:
-                req_prob, req_edge, req_ev, req_kelly = 0.45, 0.12, 0.35, 0.15
-                ok = p_side >= req_prob and ask <= 0.35 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
-                return result(ok, "allowed_phase0_value" if ok else "phase0_value_quality_not_met", "phase0_value_probe", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.35})
+                req_prob, req_edge, req_ev, req_kelly = 0.40, 0.15, 0.60, 0.12
+                ok = p_side >= req_prob and ask <= 0.25 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+                return result(ok, "allowed_phase0_value" if ok else "phase0_value_quality_not_met", "phase0_value_probe", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.25})
             if phase == 1:
-                req_prob, req_edge, req_ev, req_kelly = 0.55, 0.12, 0.30, 0.12
+                req_prob, req_edge, req_ev, req_kelly = 0.35, 0.12, 0.50, 0.08
                 ok = p_side >= req_prob and ask <= 0.35 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
                 return result(ok, "allowed_phase1_value" if ok else "phase1_value_quality_not_met", "phase1_value_probe", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.35})
             if phase >= 3:
                 req_prob, req_edge, req_ev, req_kelly = 0.45, 0.20, 0.80, 0.15
                 ok = p_side >= req_prob and ask <= 0.25 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
                 return result(ok, "allowed_phase3_tail_value" if ok else "phase3_tail_value_quality_not_met", "phase3_tail_value_tiny", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.25})
-            req_prob, req_edge, req_ev, req_kelly = 0.60, 0.12, 0.25, 0.10
-            ok = p_side >= req_prob and ask <= 0.40 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
-            return result(ok, "allowed_phase2_value" if ok else "phase2_value_quality_not_met", "phase2_value_probe", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.40})
+            req_prob, req_edge, req_ev, req_kelly = 0.35, 0.10, 0.40, 0.08
+            ok = p_side >= req_prob and ask <= 0.45 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+            return result(ok, "allowed_phase2_value" if ok else "phase2_value_quality_not_met", "phase2_value_probe", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.45})
 
         if phase <= 0:
             req_prob, req_edge, req_ev, req_kelly = 0.80, 0.15, 0.25, 0.18
             ok = p_side >= req_prob and ask <= 0.60 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
             return result(ok, "allowed_phase0_exceptional_trend" if ok else "phase0_trend_shadow_only", "phase0_no_chase", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.60})
         if phase == 1:
-            req_prob, req_edge, req_ev, req_kelly = 0.65, 0.10, 0.15, 0.12
-            ok = p_side >= req_prob and ask <= 0.65 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
-            return result(ok, "allowed_phase1_confirmed_trend" if ok else "phase1_trend_shadow_only", "phase1_confirmed_trend", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.65})
+            req_prob, req_edge, req_ev, req_kelly = 0.65, 0.07, 0.10, 0.08
+            ok = p_side >= req_prob and ask <= 0.62 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+            return result(ok, "allowed_phase1_confirmed_trend" if ok else "phase1_trend_shadow_only", "phase1_confirmed_trend", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.62})
         if phase == 2:
-            if ask >= 0.75:
-                req_prob, req_edge, req_ev, req_kelly = 0.85, 0.10, 0.12, 0.10
-                ok = p_side >= req_prob and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
-                return result(ok, "allowed_phase2_high_price_trend" if ok else "phase2_high_price_trend_shadow_only", "phase2_high_price_confirmed", req_prob, req_edge, req_ev, req_kelly, {"high_price_min_ask": 0.75})
-            req_prob, req_edge, req_ev, req_kelly = 0.70, 0.08, 0.10, 0.08
-            ok = p_side >= req_prob and ask <= 0.75 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
-            return result(ok, "allowed_phase2_trend" if ok else "phase2_trend_quality_not_met", "phase2_main_trend", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.75})
+            if ask >= 0.72:
+                req_prob, req_edge, req_ev, req_kelly = 0.82, 0.06, 0.08, 0.06
+                ok = p_side >= req_prob and ask <= 0.82 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+                return result(ok, "allowed_phase2_high_price_trend" if ok else "phase2_high_price_trend_shadow_only", "phase2_high_price_confirmed", req_prob, req_edge, req_ev, req_kelly, {"high_price_min_ask": 0.72, "trend_max_ask": 0.82})
+            req_prob, req_edge, req_ev, req_kelly = 0.68, 0.055, 0.08, 0.06
+            ok = p_side >= req_prob and ask <= 0.72 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+            return result(ok, "allowed_phase2_trend" if ok else "phase2_trend_quality_not_met", "phase2_main_trend", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.72})
 
-        req_prob, req_edge, req_ev, req_kelly = 0.85, 0.15, 0.20, 0.15
-        ok = p_side >= req_prob and ask <= 0.65 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
-        return result(ok, "allowed_phase3_exceptional_trend" if ok else "phase3_trend_shadow_only", "phase3_no_chase", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.65})
+        req_prob, req_edge, req_ev, req_kelly = 0.75, 0.06, 0.10, 0.07
+        if phase >= 4:
+            req_prob, req_edge, req_ev, req_kelly = 0.80, 0.08, 0.12, 0.08
+            ok = p_side >= req_prob and ask <= 0.65 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly and bool(p_rising_8s)
+            return result(ok, "allowed_phase4_rising_trend" if ok else "phase4_trend_shadow_only", "phase4_rising_confirm", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.65, "p_rising_required_sec": 8})
+        ok = p_side >= req_prob and ask <= 0.70 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly and bool(p_rising_5s)
+        return result(ok, "allowed_phase3_rising_trend" if ok else "phase3_trend_shadow_only", "phase3_rising_confirm", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.70, "p_rising_required_sec": 5})
 
     @staticmethod
     def _apply_lifecycle_sizing_profile(
