@@ -564,6 +564,7 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     req_edge = safe_float(cw.get("req_edge"))
     req_ev = safe_float(cw.get("req_ev"))
     req_kelly = safe_float(cw.get("req_kelly_raw"))
+    friction_adjusted_ev = safe_float(cw.get("friction_adjusted_ev"))
     best_edge = safe_float(cw.get("best_edge") or (best_prob - ask if best_prob is not None and ask is not None else None))
     best_kelly = safe_float(cw.get("best_kelly_raw"))
     trade_intent = str(cw.get("trade_intent") or "--")
@@ -610,7 +611,11 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
         rising_ok = (int(required_rising) == 5 and bool(cw.get('p_rising_5s'))) or (int(required_rising) == 8 and bool(cw.get('p_rising_8s')))
         real.append(c("rising", "连续确认", "pass" if rising_ok else "fail", f"要求={int(required_rising)}s；5s={bool(cw.get('p_rising_5s'))}；8s={bool(cw.get('p_rising_8s'))}"))
     if req_ev is not None and req_ev > -0.5:
-        real.append(c("ev", "EV", "pass" if ev is not None and ev >= req_ev else "fail" if ev is not None else "unknown", f"UP={ev_up if ev_up is not None else '--'}；DOWN={ev_down if ev_down is not None else '--'}；当前={ev if ev is not None else '--'}；要求 >= {req_ev}"))
+        if trade_intent == "ENTRY_TREND":
+            net_ev = friction_adjusted_ev if friction_adjusted_ev is not None else (best_prob / (ask * 1.005) - 1.0 if best_prob is not None and ask is not None and ask > 0 else None)
+            real.append(c("ev", "扣摩擦后EV", "pass" if net_ev is not None and net_ev > 0 else "fail" if net_ev is not None else "unknown", f"当前={round(net_ev, 6) if net_ev is not None else '--'}；要求 > 0；原始EV={ev if ev is not None else '--'}；摩擦系数={cw.get('friction_multiplier', 1.005)}"))
+        else:
+            real.append(c("ev", "EV", "pass" if ev is not None and ev >= req_ev else "fail" if ev is not None else "unknown", f"UP={ev_up if ev_up is not None else '--'}；DOWN={ev_down if ev_down is not None else '--'}；当前={ev if ev is not None else '--'}；要求 >= {req_ev}"))
     if bool(cw.get("has_same_position")) and bool(cw.get("has_opposite_position")):
         real.append(c("hedged_lock", "双边锁定", "fail", "已双边持仓，禁止继续加仓"))
     if intent_allowed is True:

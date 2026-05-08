@@ -1855,17 +1855,18 @@ class LiveRunner:
         if phase == 1:
             return result(False, "phase1_unreachable_trend", "phase1_ev_only", 0.35, -1.0, 0.40, 0.0)
         if phase == 2:
-            req_prob, req_edge, req_ev, req_kelly = 0.60, -1.0, 0.08, 0.0
-            ok = p_side >= req_prob and ask < 0.80 and ev >= req_ev
-            return result(ok, "allowed_phase2_trend" if ok else "phase2_trend_quality_not_met", "phase2_trend_price_lt_0_8", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask_exclusive": 0.80})
+            req_prob, req_edge, req_ev, req_kelly = 0.60, -1.0, 0.0, 0.0
+            friction_adjusted_ev = self._calc_ev(p_side, ask * 1.005)
+            ok = p_side >= req_prob and ask < 0.80 and friction_adjusted_ev > req_ev
+            return result(ok, "allowed_phase2_trend" if ok else "phase2_trend_quality_not_met", "phase2_trend_price_lt_0_8", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask_exclusive": 0.80, "friction_adjusted_ev": round(friction_adjusted_ev, 6), "friction_multiplier": 1.005})
 
-        req_prob, req_edge, req_ev, req_kelly = 0.60, -1.0, 0.10, 0.0
+        req_prob, req_edge, req_ev, req_kelly = 0.60, -1.0, 0.0, 0.0
+        friction_adjusted_ev = self._calc_ev(p_side, ask * 1.005)
         if phase >= 4:
-            req_prob, req_edge, req_ev, req_kelly = 0.60, -1.0, 0.12, 0.0
-            ok = p_side >= req_prob and ask < 0.80 and ev >= req_ev and bool(p_rising_8s)
-            return result(ok, "allowed_phase4_rising_trend" if ok else "phase4_trend_shadow_only", "phase4_rising_confirm", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask_exclusive": 0.80, "p_rising_required_sec": 8})
-        ok = p_side >= req_prob and ask < 0.80 and ev >= req_ev and bool(p_rising_5s)
-        return result(ok, "allowed_phase3_rising_trend" if ok else "phase3_trend_shadow_only", "phase3_rising_confirm", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask_exclusive": 0.80, "p_rising_required_sec": 5})
+            ok = p_side >= req_prob and ask < 0.80 and friction_adjusted_ev > req_ev and bool(p_rising_8s)
+            return result(ok, "allowed_phase4_rising_trend" if ok else "phase4_trend_shadow_only", "phase4_rising_confirm", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask_exclusive": 0.80, "p_rising_required_sec": 8, "friction_adjusted_ev": round(friction_adjusted_ev, 6), "friction_multiplier": 1.005})
+        ok = p_side >= req_prob and ask < 0.80 and friction_adjusted_ev > req_ev and bool(p_rising_5s)
+        return result(ok, "allowed_phase3_rising_trend" if ok else "phase3_trend_shadow_only", "phase3_rising_confirm", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask_exclusive": 0.80, "p_rising_required_sec": 5, "friction_adjusted_ev": round(friction_adjusted_ev, 6), "friction_multiplier": 1.005})
 
     @staticmethod
     def _apply_lifecycle_sizing_profile(
