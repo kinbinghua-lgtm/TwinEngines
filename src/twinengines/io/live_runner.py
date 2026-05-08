@@ -788,7 +788,7 @@ class LiveRunner:
 
         # 预填两个方向的 EV
         try:
-            _, _, ask_up, ask_down = self._resolve_best_direction_by_ev(event, window_id)
+            _, _, ask_up, ask_down = self._resolve_best_direction_by_ev(event, window_id, phase=phase)
         except:
             ask_up, ask_down = None, None
         _SIM_CURRENT["ask_up"] = ask_up; _SIM_CURRENT["ask_down"] = ask_down
@@ -809,7 +809,7 @@ class LiveRunner:
             _SIM_CURRENT["down_prob_ok"] = (p_down >= min_side_prob)
 
         try:
-            best_dir, best_ev, ask_up, ask_down = self._resolve_best_direction_by_ev(event, window_id)
+            best_dir, best_ev, ask_up, ask_down = self._resolve_best_direction_by_ev(event, window_id, phase=phase)
         except:
             _SIM_CURRENT["status"] = "EV err"; self._write_current_window_snapshot(); return
 
@@ -1899,7 +1899,7 @@ class LiveRunner:
             return 0.28, 0.14, "phase3_strong"
         return 0.20, 0.10, "phase3_base"
 
-    def _resolve_best_direction_by_ev(self, event: dict, window_id: str):
+    def _resolve_best_direction_by_ev(self, event: dict, window_id: str, *, phase: int = 3):
         if self.poly_client is None or self.market_resolver is None:
             return None, -1.0, None, None
         active = self.market_resolver.get_active()
@@ -1918,8 +1918,9 @@ class LiveRunner:
         ask_dn = float(book_dn.get("best_ask") or 0.99)
         if ask_up <= 0 or ask_up >= 1 or ask_dn <= 0 or ask_dn >= 1:
             return None, -1.0, ask_up, ask_dn
-        up_allowed = p_up >= 0.55
-        down_allowed = p_down >= 0.55
+        min_dir_prob = 0.35 if phase <= 2 else 0.55
+        up_allowed = p_up >= min_dir_prob
+        down_allowed = p_down >= min_dir_prob
         if not up_allowed and not down_allowed:
             return None, -1.0, ask_up, ask_dn
         ev_up = self._calc_ev(p_up, ask_up) if up_allowed else -1.0
