@@ -1690,9 +1690,7 @@ class LiveRunner:
             return "HEDGE"
         if has_same_position:
             return "ADD"
-        if phase <= 0 and p_side >= 0.40 and ask <= 0.35:
-            return "ENTRY_VALUE"
-        if phase == 1 and p_side >= 0.35 and ask <= 0.40:
+        if phase <= 1:
             return "ENTRY_VALUE"
         if phase == 2 and p_side >= 0.35 and ask <= 0.45:
             return "ENTRY_VALUE"
@@ -1752,12 +1750,14 @@ class LiveRunner:
 
         if intent == "HEDGE":
             if phase <= 1:
-                req_prob, req_edge, req_ev, req_kelly = 0.62, 0.055, 0.08, 0.07
-            elif phase == 2:
-                req_prob, req_edge, req_ev, req_kelly = 0.68, 0.055, 0.08, 0.07
+                req_prob, req_edge, req_ev, req_kelly = 0.35, -1.0, 0.08, 0.0
+                ok = p_side >= req_prob and ev >= req_ev
+                return result(ok, "allowed_hedge" if ok else "hedge_quality_not_met", "hedge_ev_only", req_prob, req_edge, req_ev, req_kelly)
+            if phase == 2:
+                req_prob, req_edge, req_ev, req_kelly = 0.68, -1.0, 0.08, 0.0
             else:
-                req_prob, req_edge, req_ev, req_kelly = 0.70, 0.06, 0.08, 0.07
-            ok = p_side >= req_prob and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+                req_prob, req_edge, req_ev, req_kelly = 0.70, -1.0, 0.08, 0.0
+            ok = p_side >= req_prob and ev >= req_ev
             return result(ok, "allowed_hedge" if ok else "hedge_quality_not_met", "hedge_priority", req_prob, req_edge, req_ev, req_kelly)
 
         if intent == "ADD":
@@ -1771,44 +1771,40 @@ class LiveRunner:
 
         if intent == "ENTRY_VALUE":
             if phase <= 0:
-                req_prob, req_edge, req_ev, req_kelly = 0.40, 0.15, 0.60, 0.12
-                ok = p_side >= req_prob and ask <= 0.35 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
-                return result(ok, "allowed_phase0_value" if ok else "phase0_value_quality_not_met", "phase0_value_ev_first", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.35})
+                req_prob, req_edge, req_ev, req_kelly = 0.35, -1.0, 0.50, 0.0
+                ok = p_side >= req_prob and ev >= req_ev
+                return result(ok, "allowed_phase0_ev" if ok else "phase0_ev_quality_not_met", "phase0_ev_only", req_prob, req_edge, req_ev, req_kelly)
             if phase == 1:
-                req_prob, req_edge, req_ev, req_kelly = 0.35, 0.12, 0.50, 0.08
-                ok = p_side >= req_prob and ask <= 0.40 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
-                return result(ok, "allowed_phase1_value" if ok else "phase1_value_quality_not_met", "phase1_value_ev_first", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.40})
+                req_prob, req_edge, req_ev, req_kelly = 0.35, -1.0, 0.40, 0.0
+                ok = p_side >= req_prob and ev >= req_ev
+                return result(ok, "allowed_phase1_ev" if ok else "phase1_ev_quality_not_met", "phase1_ev_only", req_prob, req_edge, req_ev, req_kelly)
             if phase >= 3:
-                req_prob, req_edge, req_ev, req_kelly = 0.45, 0.20, 0.80, 0.15
-                ok = p_side >= req_prob and ask <= 0.25 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+                req_prob, req_edge, req_ev, req_kelly = 0.45, -1.0, 0.80, 0.0
+                ok = p_side >= req_prob and ask <= 0.25 and ev >= req_ev
                 return result(ok, "allowed_phase3_tail_value" if ok else "phase3_tail_value_quality_not_met", "phase3_tail_value_tiny", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.25})
-            req_prob, req_edge, req_ev, req_kelly = 0.35, 0.10, 0.40, 0.08
-            ok = p_side >= req_prob and ask <= 0.45 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+            req_prob, req_edge, req_ev, req_kelly = 0.35, -1.0, 0.40, 0.0
+            ok = p_side >= req_prob and ask <= 0.45 and ev >= req_ev
             return result(ok, "allowed_phase2_value" if ok else "phase2_value_quality_not_met", "phase2_value_ev_first", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.45})
 
         if phase <= 0:
-            req_prob, req_edge, req_ev, req_kelly = 0.80, 0.15, 0.25, 0.18
-            ok = p_side >= req_prob and ask <= 0.60 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
-            return result(ok, "allowed_phase0_exceptional_trend" if ok else "phase0_trend_shadow_only", "phase0_no_chase", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.60})
+            return result(False, "phase0_unreachable_trend", "phase0_ev_only", 0.35, -1.0, 0.50, 0.0)
         if phase == 1:
-            req_prob, req_edge, req_ev, req_kelly = 0.65, 0.07, 0.10, 0.08
-            ok = p_side >= req_prob and ask <= 0.62 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
-            return result(ok, "allowed_phase1_confirmed_trend" if ok else "phase1_trend_shadow_only", "phase1_confirmed_trend", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.62})
+            return result(False, "phase1_unreachable_trend", "phase1_ev_only", 0.35, -1.0, 0.40, 0.0)
         if phase == 2:
             if ask >= 0.72:
-                req_prob, req_edge, req_ev, req_kelly = 0.82, 0.06, 0.08, 0.06
-                ok = p_side >= req_prob and ask < 0.80 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+                req_prob, req_edge, req_ev, req_kelly = 0.82, -1.0, 0.08, 0.0
+                ok = p_side >= req_prob and ask < 0.80 and ev >= req_ev
                 return result(ok, "allowed_phase2_high_price_trend" if ok else "phase2_high_price_trend_shadow_only", "phase2_high_price_confirmed", req_prob, req_edge, req_ev, req_kelly, {"high_price_min_ask": 0.72, "trend_max_ask_exclusive": 0.80})
-            req_prob, req_edge, req_ev, req_kelly = 0.68, 0.055, 0.08, 0.06
-            ok = p_side >= req_prob and ask <= 0.72 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+            req_prob, req_edge, req_ev, req_kelly = 0.68, -1.0, 0.08, 0.0
+            ok = p_side >= req_prob and ask <= 0.72 and ev >= req_ev
             return result(ok, "allowed_phase2_trend" if ok else "phase2_trend_quality_not_met", "phase2_main_trend", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.72})
 
-        req_prob, req_edge, req_ev, req_kelly = 0.75, 0.06, 0.10, 0.07
+        req_prob, req_edge, req_ev, req_kelly = 0.75, -1.0, 0.10, 0.0
         if phase >= 4:
-            req_prob, req_edge, req_ev, req_kelly = 0.80, 0.08, 0.12, 0.08
-            ok = p_side >= req_prob and ask <= 0.65 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly and bool(p_rising_8s)
+            req_prob, req_edge, req_ev, req_kelly = 0.80, -1.0, 0.12, 0.0
+            ok = p_side >= req_prob and ask <= 0.65 and ev >= req_ev and bool(p_rising_8s)
             return result(ok, "allowed_phase4_rising_trend" if ok else "phase4_trend_shadow_only", "phase4_rising_confirm", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.65, "p_rising_required_sec": 8})
-        ok = p_side >= req_prob and ask <= 0.70 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly and bool(p_rising_5s)
+        ok = p_side >= req_prob and ask <= 0.70 and ev >= req_ev and bool(p_rising_5s)
         return result(ok, "allowed_phase3_rising_trend" if ok else "phase3_trend_shadow_only", "phase3_rising_confirm", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.70, "p_rising_required_sec": 5})
 
     @staticmethod
@@ -1891,22 +1887,22 @@ class LiveRunner:
         has_position: bool = False,
     ) -> tuple[float, float, str]:
         if phase <= 0:
-            if p_side >= 0.85 and edge >= 0.09 and ev >= 0.12 and kelly_raw >= 0.10:
+            if p_side >= 0.85 and ev >= 0.12 and kelly_raw >= 0.10:
                 return 0.22, 0.14, "phase0_aggressive_probe_plus"
             return 0.18, 0.10, "phase0_aggressive_probe"
         if phase == 1:
-            if p_side >= 0.85 and edge >= 0.08 and ev >= 0.10 and kelly_raw >= 0.10:
+            if p_side >= 0.85 and ev >= 0.10 and kelly_raw >= 0.10:
                 return 0.26, 0.16, "phase1_aggressive_confirm"
             return 0.22, 0.12, "phase1_aggressive_probe"
         if phase == 2:
-            if p_side >= 0.88 and edge >= 0.08 and ev >= 0.05 and kelly_raw >= 0.10:
+            if p_side >= 0.88 and ev >= 0.05 and kelly_raw >= 0.10:
                 return 0.32, 0.16, "phase2_exceptional"
-            if p_side >= 0.80 and edge >= 0.07 and ev >= 0.08 and kelly_raw >= 0.10:
+            if p_side >= 0.80 and ev >= 0.08 and kelly_raw >= 0.10:
                 return 0.28, 0.14, "phase2_strong"
             return 0.22, 0.10, "phase2_base"
-        if p_side >= 0.90 and edge >= 0.08 and ev >= 0.04 and kelly_raw >= 0.08:
+        if p_side >= 0.90 and ev >= 0.04 and kelly_raw >= 0.08:
             return 0.35, 0.18, "phase3_exceptional"
-        if p_side >= 0.75 and edge >= 0.055 and ev >= 0.06 and kelly_raw >= 0.07:
+        if p_side >= 0.75 and ev >= 0.06 and kelly_raw >= 0.07:
             return 0.28, 0.14, "phase3_strong"
         return 0.20, 0.10, "phase3_base"
 
@@ -1929,19 +1925,18 @@ class LiveRunner:
         ask_dn = float(book_dn.get("best_ask") or 0.99)
         if ask_up <= 0 or ask_up >= 1 or ask_dn <= 0 or ask_dn >= 1:
             return None, -1.0, ask_up, ask_dn
-        min_dir_prob = 0.35 if phase <= 2 else 0.55
+        if phase <= 1:
+            min_dir_prob = 0.35
+        elif phase == 2:
+            min_dir_prob = 0.35
+        else:
+            min_dir_prob = 0.55
         up_allowed = p_up >= min_dir_prob
         down_allowed = p_down >= min_dir_prob
         if not up_allowed and not down_allowed:
             return None, -1.0, ask_up, ask_dn
         ev_up = self._calc_ev(p_up, ask_up) if up_allowed else -1.0
         ev_down = self._calc_ev(p_down, ask_dn) if down_allowed else -1.0
-        kelly_up = self._raw_kelly_ratio(p_up, ask_up) if up_allowed else 0.0
-        kelly_down = self._raw_kelly_ratio(p_down, ask_dn) if down_allowed else 0.0
-        if kelly_up > 0 or kelly_down > 0:
-            if kelly_up >= kelly_down:
-                return "up", ev_up, ask_up, ask_dn
-            return "down", ev_down, ask_up, ask_dn
         if ev_up >= ev_down:
             return "up", ev_up, ask_up, ask_dn
         return "down", ev_down, ask_up, ask_dn
