@@ -490,9 +490,9 @@ def summary_payload(root: Path) -> dict[str, Any]:
     return {"ok": True, "real_balance_usdc": real_balance, "real_pending_redeem_usdc": None, "real_redeem_ok": None, "shadow_equity_usdc": shadow_equity, "shadow_equity_note": None if shadow_equity is not None else "无影子账户数据"}
 
 def _web_phase_rule(phase_num):
-    rules = {0: (0.60, 2, 0.08), 1: (0.65, 3, 0.06), 2: (0.70, 4, 0.04), 3: (0.75, 5, 0.02), 4: (0.80, 6, 0.0)}
+    rules = {0: (0.60, 6, 0.00), 1: (0.65, 5, 0.02), 2: (0.70, 4, 0.04), 3: (0.65, 3, 0.06), 4: (0.60, 2, 0.08)}
     if not isinstance(phase_num, int):
-        return (0.80, 6, 0.0)
+        return (0.60, 2, 0.08)
     return rules.get(max(0, min(4, phase_num)), rules[4])
 
 
@@ -506,11 +506,11 @@ def _phase_box_condition_subset(phase_num, all_conditions):
 
 def _phase_boxes_for_decision(phase_num, conditions):
     titles = {
-        0: "p>0.60×2s / 净EV>0.08",
-        1: "p>0.65×3s / 净EV>0.06",
+        0: "p>0.60×6s / 净EV>0.00",
+        1: "p>0.65×5s / 净EV>0.02",
         2: "p>0.70×4s / 净EV>0.04",
-        3: "p>0.75×5s / 净EV>0.02",
-        4: "p>0.80×6s / 净EV>0",
+        3: "p>0.65×3s / 净EV>0.06",
+        4: "p>0.60×2s / 净EV>0.08",
     }
     boxes = []
     current = phase_num if isinstance(phase_num, int) and 0 <= phase_num <= 4 else None
