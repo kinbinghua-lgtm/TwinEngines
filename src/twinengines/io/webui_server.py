@@ -675,13 +675,6 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     if not decision_pending and required_confirm is not None and required_confirm > 0:
         confirm_ok = bool(cw.get('p_confirm_ok'))
         real.append(c("confirm", "连续概率", "pass" if confirm_ok else "fail", f"要求={int(required_confirm)}s 连续 p>{phase_rule_prob}；当前={best_prob if best_prob is not None else '--'}；ok={confirm_ok}"))
-    stability_required = safe_float(cw.get('p_stability_required_sec')) or 0
-    if not decision_pending and stability_required > 0:
-        stability_ok = bool(cw.get('p_stability_ok'))
-        real.append(c("stability", "概率回落保护", "pass" if stability_ok else "fail", f"要求最近{int(stability_required)}s 回落≤{cw.get('p_stability_max_drop','--')}；实际回落={cw.get('p_stability_drop','--')}；ok={stability_ok}"))
-    if not decision_pending and bool(cw.get('low_price_high_ev_monotonic_required')):
-        mono_ok = bool(cw.get('low_price_high_ev_monotonic_ok'))
-        real.append(c("monotonic", "低价高EV单调保护", "pass" if mono_ok else "fail", f"price<0.50 且 EV>0.30，要求最近{cw.get('low_price_high_ev_monotonic_sec','--')}s p_side单调不降；ok={mono_ok}"))
     if not decision_pending and phase_num is not None:
         net_ev = friction_adjusted_ev if friction_adjusted_ev is not None else (best_prob / (ask * 1.005) - 1.0 if best_prob is not None and ask is not None and ask > 0 else None)
         real.append(c("ev", "扣摩擦后EV", "pass" if net_ev is not None and net_ev > phase_rule_ev else "fail" if net_ev is not None else "unknown", f"当前={round(net_ev, 6) if net_ev is not None else '--'}；要求 > {phase_rule_ev}；原始EV={ev if ev is not None else '--'}；摩擦系数={cw.get('friction_multiplier', 1.005)}"))
