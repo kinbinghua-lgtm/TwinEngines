@@ -833,7 +833,18 @@ class LiveRunner:
             _SIM_CURRENT["status"] = "EV err"; self._write_current_window_snapshot(); return
 
         if best_dir is None:
-            _SIM_CURRENT["status"] = "EV neg"; self._write_current_window_snapshot(); return
+            _SIM_CURRENT["status"] = "no_eligible_direction"
+            _SIM_CURRENT["decision_pending"] = False
+            _SIM_CURRENT["trade_intent"] = "NO_TRADE"
+            _SIM_CURRENT["intent_allowed"] = False
+            _SIM_CURRENT["intent_reason"] = "no_direction_passed_candidate_filter"
+            _SIM_CURRENT["lifecycle_phase_policy"] = "candidate_filter"
+            _SIM_CURRENT["req_prob"] = 0.35 if phase <= 1 else 0.60
+            _SIM_CURRENT["trend_max_ask_exclusive"] = 0.80 if phase >= 2 else None
+            _SIM_CURRENT["friction_multiplier"] = 1.005 if phase >= 2 else None
+            _SIM_CURRENT["candidate_filter_reason"] = "phase0/1 need p>=0.35; phase2/3/4 need p>=0.60 before trend gate"
+            self._write_current_window_snapshot()
+            return
 
         signal_meta = {
             "phase": phase,
@@ -2022,12 +2033,13 @@ class LiveRunner:
             return None, -1.0, ask_up, ask_dn
         if phase <= 1:
             min_dir_prob = 0.35
-        elif phase == 2:
-            min_dir_prob = 0.35
         else:
             min_dir_prob = 0.60
         up_allowed = p_up >= min_dir_prob
         down_allowed = p_down >= min_dir_prob
+        if phase >= 2:
+            up_allowed = up_allowed and ask_up < 0.80
+            down_allowed = down_allowed and ask_dn < 0.80
         if not up_allowed and not down_allowed:
             return None, -1.0, ask_up, ask_dn
         ev_up = self._calc_ev(p_up, ask_up) if up_allowed else -1.0
