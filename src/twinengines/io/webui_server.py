@@ -549,14 +549,20 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     T = safe_float(cw.get("T") or cw.get("T_remaining") or cw.get("t_remaining_sec")); best_dir = str(cw.get("best_dir") or "").lower()
     dir_label = best_dir.upper() if best_dir else "未确定"
     ask_up = safe_float(cw.get("ask_up")); ask_down = safe_float(cw.get("ask_down")); ask = ask_up if best_dir == "up" else ask_down if best_dir == "down" else None
-    ev_up = safe_float(cw.get("ev_up")); ev_down = safe_float(cw.get("ev_down")); ev = safe_float(cw.get("fill_ev") or cw.get("best_ev") or (ev_up if best_dir == "up" else ev_down if best_dir == "down" else None)); ev_min = safe_float(cw.get("min_ev")) or 0.08
+    ev_up = safe_float(cw.get("ev_up")); ev_down = safe_float(cw.get("ev_down"))
+    ev = safe_float(cw.get("best_ev"))
+    if ev is None:
+        ev = safe_float(cw.get("best_ev_simple"))
+    if ev is None:
+        ev = ev_up if best_dir == "up" else ev_down if best_dir == "down" else None
+    ev_min = safe_float(cw.get("min_ev")) or 0.08
     p_up = safe_float(cw.get("p_up")); p_down = safe_float(cw.get("p_down")); best_prob = p_up if best_dir == "up" else p_down if best_dir == "down" else None
     real_target = safe_float(cw.get("real_target_quote")); shares = real_target / ask if real_target is not None and ask else None
     sizing_fraction = safe_float(cw.get("sizing_fraction")) or 0.20; max_stake_ratio = safe_float(cw.get("max_stake_ratio")) or 0.10
     bal = sm.get("real_balance_usdc"); cap = float(bal) * max_stake_ratio if bal is not None else None; real_status = str(cw.get("real_status") or "未提交")
     req_prob = safe_float(cw.get("req_prob"))
     req_edge = safe_float(cw.get("req_edge"))
-    req_ev = safe_float(cw.get("req_ev")) or ev_min
+    req_ev = safe_float(cw.get("req_ev"))
     req_kelly = safe_float(cw.get("req_kelly_raw"))
     best_edge = safe_float(cw.get("best_edge") or (best_prob - ask if best_prob is not None and ask is not None else None))
     best_kelly = safe_float(cw.get("best_kelly_raw"))
@@ -586,7 +592,7 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     elif "Kelly<2.5" in real_status: reason = "未提交：建议下注金额低于 $2.50，或账户余额/cap 不足"
     else: reason = f"未提交：{fail['label']}未通过" if fail else f"未提交：{real_status}"
     fill = safe_float(cw.get("fill_amt") or cw.get("fill_amount")); shadow_status = str(cw.get("status") or "等待")
-    shadow = [c("time","时间条件","pass" if T is not None and T >= 15 else "fail", f"T={T:.0f}s >= 15s" if T is not None else "无数据"), c("intent","阶段-意图门控", "pass" if intent_allowed is True else "fail" if intent_allowed is False else "unknown", f"{intent_reason}"), c("ev","动态 EV 条件","pass" if ev is not None and ev >= req_ev else "fail" if ev is not None else "unknown", f"EV={ev if ev is not None else '--'}，当前要求={req_ev if req_ev is not None else '--'}"), c("kelly","模拟 Kelly 条件","pass" if fill and fill >= 2.5 else "warn", f"影子 fill={fill if fill is not None else '--'}")]
+    shadow = [c("time","时间条件","pass" if T is not None and T >= 15 else "fail", f"T={T:.0f}s >= 15s" if T is not None else "无数据"), c("intent","阶段-意图门控", "pass" if intent_allowed is True else "fail" if intent_allowed is False else "unknown", f"{intent_reason}"), c("ev","动态 EV 条件","pass" if req_ev is not None and ev is not None and ev >= req_ev else "fail" if req_ev is not None and ev is not None else "unknown", f"EV={ev if ev is not None else '--'}，当前要求={req_ev if req_ev is not None else '--'}"), c("kelly","模拟 Kelly 条件","pass" if fill and fill >= 2.5 else "warn", f"影子 fill={fill if fill is not None else '--'}")]
     return {"ok": True, "window_id": wid, "window_label": window_label(wid), "seq": seq, "seq_display": seq_display, "seq_total": seq_total, "prefix": seq, "T_remaining": T, "server_ts_ms": int(time.time() * 1000), "p_up": p_up, "p_down": p_down, "ev_up": ev_up, "ev_down": ev_down, "best_dir": best_dir, "best_dir_label": dir_label, "decision_mode": "方向概率", "evaluated_direction": best_dir, "evaluated_direction_label": dir_label, "evaluated_ask": ask, "ask_up": ask_up, "ask_down": ask_down, "best_ev": ev, "real": {"status": real_status, "reason": reason, "target_quote": real_target, "target_shares": shares, "filled_order": filled, "conditions": real}, "shadow": {"status": shadow_status, "reason": str(cw.get("reason") or shadow_status), "fill_amount": fill, "ev": ev, "equity": sm.get("shadow_equity_usdc"), "conditions": shadow}, "source": "current_window.json + derived"}
 
 
