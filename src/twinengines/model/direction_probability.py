@@ -16,6 +16,7 @@ WINDOW_MINUTES = 5
 def prefix_values(prefix_len: int) -> list[str]:
     if prefix_len <= 0:
         return []
+    prefix_len = max(0, min(8, int(prefix_len)))
     return [format(i, f"0{prefix_len}b") for i in range(2 ** prefix_len)]
 
 
@@ -139,7 +140,7 @@ class DirectionProbabilityModel:
         )
 
     def _make_feature_row(self, x: DirectionProbabilityInput) -> dict[str, float | int | str]:
-        prefix_len = max(0, min(3, int(self.prefix_len)))
+        prefix_len = max(0, min(8, int(self.prefix_len)))
         prefix = str(x.prefix or "")[:prefix_len]
         d_signed = float(x.d_signed)
         d_abs = abs(d_signed)

@@ -238,7 +238,9 @@ class ShadowSignalEngine:
             return 1
         if sec_in_window < 180:
             return 2
-        return 3
+        if sec_in_window < 240:
+            return 3
+        return 4
 
     def _model_for_phase(self, phase: int) -> DirectionProbabilityModel | None:
         if self.direction_models:

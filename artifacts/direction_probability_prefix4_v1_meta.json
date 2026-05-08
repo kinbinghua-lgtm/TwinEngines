@@ -1,0 +1,22 @@
+{
+  "semantic": "prefix4 final-minute direction probability model and conditional prior table",
+  "model": "HistGradientBoostingClassifier + isotonic calibration cv=3",
+  "obs_step_sec": 5,
+  "prefix_len": 4,
+  "train_start": "2025-11-08",
+  "train_end": "2026-04-06",
+  "valid_start": "2026-04-07",
+  "valid_end": "2026-05-06",
+  "train_samples": 518400,
+  "train_windows": 43200,
+  "valid_samples": 103680,
+  "valid_windows": 8640,
+  "feature_count": 78,
+  "train_up_rate": 0.4985185185185185,
+  "valid_up_rate": 0.5052083333333334,
+  "valid_brier": 0.09364078960935585,
+  "valid_logloss": 0.30497731382781507,
+  "valid_direction_accuracy": 0.8766878858024691,
+  "valid_mean_abs_calibration_error": 0.02335539348322186,
+  "model_version": "direction_probability_prefix4_v1"
+}
