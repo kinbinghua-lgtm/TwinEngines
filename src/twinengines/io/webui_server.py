@@ -593,6 +593,8 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     ask_checks = []
     if cw.get('value_max_ask') is not None:
         ask_checks.append(("value_max", "<=", float(cw.get('value_max_ask'))))
+    if cw.get('value_max_ask_exclusive') is not None:
+        ask_checks.append(("value_max_excl", "<", float(cw.get('value_max_ask_exclusive'))))
     if cw.get('trend_max_ask') is not None:
         ask_checks.append(("trend_max", "<=", float(cw.get('trend_max_ask'))))
     if cw.get('trend_max_ask_exclusive') is not None:

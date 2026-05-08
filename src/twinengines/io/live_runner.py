@@ -1693,9 +1693,9 @@ class LiveRunner:
             return "ADD"
         if phase <= 1:
             return "ENTRY_VALUE"
-        if phase == 2 and p_side >= 0.35 and ask <= 0.45:
+        if phase == 2 and p_side >= 0.35 and ask < 0.80:
             return "ENTRY_VALUE"
-        if phase >= 3 and ask <= 0.25 and p_side >= 0.45:
+        if phase >= 3 and ask < 0.80 and p_side >= 0.45:
             return "ENTRY_VALUE"
         return "ENTRY_TREND"
 
@@ -1781,32 +1781,28 @@ class LiveRunner:
                 return result(ok, "allowed_phase1_ev" if ok else "phase1_ev_quality_not_met", "phase1_ev_only", req_prob, req_edge, req_ev, req_kelly)
             if phase >= 3:
                 req_prob, req_edge, req_ev, req_kelly = 0.45, -1.0, 0.80, 0.0
-                ok = p_side >= req_prob and ask <= 0.25 and ev >= req_ev
-                return result(ok, "allowed_phase3_tail_value" if ok else "phase3_tail_value_quality_not_met", "phase3_tail_value_tiny", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.25})
+                ok = p_side >= req_prob and ask < 0.80 and ev >= req_ev
+                return result(ok, "allowed_phase3_tail_value" if ok else "phase3_tail_value_quality_not_met", "phase3_tail_value_tiny", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask_exclusive": 0.80})
             req_prob, req_edge, req_ev, req_kelly = 0.35, -1.0, 0.40, 0.0
-            ok = p_side >= req_prob and ask <= 0.45 and ev >= req_ev
-            return result(ok, "allowed_phase2_value" if ok else "phase2_value_quality_not_met", "phase2_value_ev_first", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.45})
+            ok = p_side >= req_prob and ask < 0.80 and ev >= req_ev
+            return result(ok, "allowed_phase2_value" if ok else "phase2_value_quality_not_met", "phase2_value_ev_first", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask_exclusive": 0.80})
 
         if phase <= 0:
             return result(False, "phase0_unreachable_trend", "phase0_ev_only", 0.35, -1.0, 0.50, 0.0)
         if phase == 1:
             return result(False, "phase1_unreachable_trend", "phase1_ev_only", 0.35, -1.0, 0.40, 0.0)
         if phase == 2:
-            if ask >= 0.72:
-                req_prob, req_edge, req_ev, req_kelly = 0.60, -1.0, 0.08, 0.0
-                ok = p_side >= req_prob and ask < 0.80 and ev >= req_ev
-                return result(ok, "allowed_phase2_high_price_trend" if ok else "phase2_high_price_trend_shadow_only", "phase2_high_price_confirmed", req_prob, req_edge, req_ev, req_kelly, {"high_price_min_ask": 0.72, "trend_max_ask_exclusive": 0.80})
             req_prob, req_edge, req_ev, req_kelly = 0.60, -1.0, 0.08, 0.0
-            ok = p_side >= req_prob and ask <= 0.72 and ev >= req_ev
-            return result(ok, "allowed_phase2_trend" if ok else "phase2_trend_quality_not_met", "phase2_main_trend", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.72})
+            ok = p_side >= req_prob and ask < 0.80 and ev >= req_ev
+            return result(ok, "allowed_phase2_trend" if ok else "phase2_trend_quality_not_met", "phase2_trend_price_lt_0_8", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask_exclusive": 0.80})
 
         req_prob, req_edge, req_ev, req_kelly = 0.60, -1.0, 0.10, 0.0
         if phase >= 4:
             req_prob, req_edge, req_ev, req_kelly = 0.60, -1.0, 0.12, 0.0
-            ok = p_side >= req_prob and ask <= 0.65 and ev >= req_ev and bool(p_rising_8s)
-            return result(ok, "allowed_phase4_rising_trend" if ok else "phase4_trend_shadow_only", "phase4_rising_confirm", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.65, "p_rising_required_sec": 8})
-        ok = p_side >= req_prob and ask <= 0.70 and ev >= req_ev and bool(p_rising_5s)
-        return result(ok, "allowed_phase3_rising_trend" if ok else "phase3_trend_shadow_only", "phase3_rising_confirm", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.70, "p_rising_required_sec": 5})
+            ok = p_side >= req_prob and ask < 0.80 and ev >= req_ev and bool(p_rising_8s)
+            return result(ok, "allowed_phase4_rising_trend" if ok else "phase4_trend_shadow_only", "phase4_rising_confirm", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask_exclusive": 0.80, "p_rising_required_sec": 8})
+        ok = p_side >= req_prob and ask < 0.80 and ev >= req_ev and bool(p_rising_5s)
+        return result(ok, "allowed_phase3_rising_trend" if ok else "phase3_trend_shadow_only", "phase3_rising_confirm", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask_exclusive": 0.80, "p_rising_required_sec": 5})
 
     @staticmethod
     def _apply_lifecycle_sizing_profile(
