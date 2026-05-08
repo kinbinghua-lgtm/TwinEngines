@@ -489,8 +489,15 @@ def summary_payload(root: Path) -> dict[str, Any]:
     shadow_equity = read_float(root / "data_runtime" / "sim_equity.txt")
     return {"ok": True, "real_balance_usdc": real_balance, "real_pending_redeem_usdc": None, "real_redeem_ok": None, "shadow_equity_usdc": shadow_equity, "shadow_equity_note": None if shadow_equity is not None else "无影子账户数据"}
 
+def _web_phase_rule(phase_num):
+    rules = {0: (0.60, 2, 0.08), 1: (0.65, 3, 0.06), 2: (0.70, 4, 0.04), 3: (0.75, 5, 0.02), 4: (0.80, 6, 0.0)}
+    if not isinstance(phase_num, int):
+        return (0.80, 6, 0.0)
+    return rules.get(max(0, min(4, phase_num)), rules[4])
+
+
 def _phase_box_condition_subset(phase_num, all_conditions):
-    keys_by_phase = {0: {"intent", "prob", "ev"}, 1: {"intent", "prob", "ev"}, 2: {"intent", "prob", "ask_rule", "ev"}, 3: {"intent", "prob", "ask_rule", "ev", "rising"}, 4: {"intent", "prob", "ask_rule", "ev", "rising"}}
+    keys_by_phase = {0: {"intent", "prob", "ask_rule", "confirm", "ev"}, 1: {"intent", "prob", "ask_rule", "confirm", "ev"}, 2: {"intent", "prob", "ask_rule", "confirm", "ev"}, 3: {"intent", "prob", "ask_rule", "confirm", "ev"}, 4: {"intent", "prob", "ask_rule", "confirm", "ev"}}
     if not isinstance(phase_num, int):
         return []
     keys = keys_by_phase.get(phase_num, set())
@@ -499,11 +506,11 @@ def _phase_box_condition_subset(phase_num, all_conditions):
 
 def _phase_boxes_for_decision(phase_num, conditions):
     titles = {
-        0: "EV > 0.30",
-        1: "EV > 0.15",
-        2: "TREND",
-        3: "TREND + 连续5s",
-        4: "TREND + 连续8s",
+        0: "p>0.60×2s / 净EV>0.08",
+        1: "p>0.65×3s / 净EV>0.06",
+        2: "p>0.70×4s / 净EV>0.04",
+        3: "p>0.75×5s / 净EV>0.02",
+        4: "p>0.80×6s / 净EV>0",
     }
     boxes = []
     current = phase_num if isinstance(phase_num, int) and 0 <= phase_num <= 4 else None
@@ -634,9 +641,9 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     if decision_pending:
         direction_text = "等待完整决策快照"
     elif trade_intent == "ENTRY_VALUE":
-        direction_text = "EV通道：p>=0.35 的方向参与EV对比，允许 p<0.5"
+        direction_text = "五阶段通道：按本阶段连续p、ask<0.8、扣摩擦后EV判断"
     elif trade_intent in ("ENTRY_TREND", "HEDGE"):
-        direction_text = "TREND通道：p>=0.60 的方向参与EV对比"
+        direction_text = "五阶段通道：按本阶段连续p、ask<0.8、扣摩擦后EV判断"
     elif trade_intent == "ADD":
         direction_text = "ADD通道：已有同向仓位，按当前方向补仓规则判断"
     else:
@@ -644,10 +651,9 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     if not decision_pending:
         real.append(c("direction_select", "方向选择", "pass" if best_dir else "unknown", f"{direction_text}；当前选中 {dir_label}"))
         real.append(c("intent", "阶段门控", "pass" if intent_allowed is True else "fail" if intent_allowed is False else "unknown", f"{intent_reason}"))
-    if not decision_pending and req_prob is not None and req_prob > 0:
-        real.append(c("prob", "概率", "pass" if best_prob is not None and best_prob >= req_prob else "fail" if best_prob is not None else "unknown", f"当前={best_prob if best_prob is not None else '--'}；要求 >= {req_prob}"))
-    elif not decision_pending and phase_num is not None and phase_num >= 2:
-        real.append(c("prob", "概率", "pass" if best_prob is not None and best_prob >= 0.60 else "fail" if best_prob is not None else "unknown", f"当前={best_prob if best_prob is not None else '--'}；要求 >= 0.6"))
+    phase_rule_prob, phase_rule_confirm_sec, phase_rule_ev = _web_phase_rule(phase_num)
+    if not decision_pending and phase_num is not None:
+        real.append(c("prob", "概率", "pass" if best_prob is not None and best_prob > phase_rule_prob else "fail" if best_prob is not None else "unknown", f"当前={best_prob if best_prob is not None else '--'}；要求 > {phase_rule_prob}"))
     ask_checks = []
     if cw.get('value_max_ask') is not None:
         ask_checks.append(("value_max", "<=", float(cw.get('value_max_ask'))))
@@ -657,23 +663,21 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
         ask_checks.append(("trend_max", "<=", float(cw.get('trend_max_ask'))))
     if cw.get('trend_max_ask_exclusive') is not None:
         ask_checks.append(("trend_max_excl", "<", float(cw.get('trend_max_ask_exclusive'))))
-    elif phase_num is not None and phase_num >= 2:
-        ask_checks.append(("trend_max_excl", "<", 0.80))
+    elif phase_num is not None:
+        ask_checks.append(("max_ask", "<", 0.80))
     if cw.get('add_max_ask_exclusive') is not None:
         ask_checks.append(("add_max_excl", "<", float(cw.get('add_max_ask_exclusive'))))
     if not decision_pending and ask_checks:
         ask_ok = ask is not None and all((ask <= v if op == "<=" else ask < v) for _, op, v in ask_checks)
         ask_text = "；".join(f"{name} {op} {v}" for name, op, v in ask_checks)
         real.append(c("ask_rule", "价格", "pass" if ask_ok else "fail" if ask is not None else "unknown", f"当前ask={ask if ask is not None else '--'}；{ask_text}"))
-    required_rising = safe_float(cw.get('p_rising_required_sec'))
-    if not decision_pending and required_rising is not None and required_rising > 0:
-        rising_ok = (int(required_rising) == 5 and bool(cw.get('p_rising_5s'))) or (int(required_rising) == 8 and bool(cw.get('p_rising_8s')))
-        real.append(c("rising", "连续确认", "pass" if rising_ok else "fail", f"要求={int(required_rising)}s；5s={bool(cw.get('p_rising_5s'))}；8s={bool(cw.get('p_rising_8s'))}"))
-    if not decision_pending and phase_num is not None and phase_num >= 2:
+    required_confirm = safe_float(cw.get('p_confirm_required_sec')) or phase_rule_confirm_sec
+    if not decision_pending and required_confirm is not None and required_confirm > 0:
+        confirm_ok = bool(cw.get('p_confirm_ok'))
+        real.append(c("confirm", "连续概率", "pass" if confirm_ok else "fail", f"要求={int(required_confirm)}s 连续 p>{phase_rule_prob}；当前={best_prob if best_prob is not None else '--'}；ok={confirm_ok}"))
+    if not decision_pending and phase_num is not None:
         net_ev = friction_adjusted_ev if friction_adjusted_ev is not None else (best_prob / (ask * 1.005) - 1.0 if best_prob is not None and ask is not None and ask > 0 else None)
-        real.append(c("ev", "扣摩擦后EV", "pass" if net_ev is not None and net_ev > 0 else "fail" if net_ev is not None else "unknown", f"当前={round(net_ev, 6) if net_ev is not None else '--'}；要求 > 0；原始EV={ev if ev is not None else '--'}；摩擦系数={cw.get('friction_multiplier', 1.005)}"))
-    elif not decision_pending and req_ev is not None and req_ev > -0.5:
-        real.append(c("ev", "EV", "pass" if ev is not None and ev > req_ev else "fail" if ev is not None else "unknown", f"UP={ev_up if ev_up is not None else '--'}；DOWN={ev_down if ev_down is not None else '--'}；当前={ev if ev is not None else '--'}；要求 > {req_ev}"))
+        real.append(c("ev", "扣摩擦后EV", "pass" if net_ev is not None and net_ev > phase_rule_ev else "fail" if net_ev is not None else "unknown", f"当前={round(net_ev, 6) if net_ev is not None else '--'}；要求 > {phase_rule_ev}；原始EV={ev if ev is not None else '--'}；摩擦系数={cw.get('friction_multiplier', 1.005)}"))
     if not decision_pending and bool(cw.get("has_same_position")) and bool(cw.get("has_opposite_position")):
         real.append(c("hedged_lock", "双边锁定", "fail", "已双边持仓，禁止继续加仓"))
     if not decision_pending and intent_allowed is True:

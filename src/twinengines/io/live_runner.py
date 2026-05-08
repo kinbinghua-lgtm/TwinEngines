@@ -748,10 +748,9 @@ class LiveRunner:
             except Exception as e:
                 logger.debug("exit_guard observe_probability failed window_id=%s err=%s", window_id, e)
 
-        min_side_prob = 0.55
-        min_edge = 0.055
-        min_ev = 0.08
-        min_kelly_raw = 0.08
+        min_side_prob, phase_confirm_sec_for_display, min_ev = self._phase_gate_rule(phase)
+        min_edge = -1.0
+        min_kelly_raw = 0.0
         min_entry_t_rem = 15.0
         key = trig[:3] if len(trig) >= 3 else ""
         startup_observe_only = False
@@ -773,6 +772,7 @@ class LiveRunner:
             "is_hedge", "is_add", "is_value_entry", "is_trend_entry",
             "value_max_ask", "value_max_ask_exclusive", "trend_max_ask", "trend_max_ask_exclusive",
             "add_max_ask_exclusive", "high_price_min_ask", "p_rising_required_sec", "p_rising_5s", "p_rising_8s",
+            "p_confirm_required_sec", "p_confirm_ok", "p_confirm_threshold",
             "friction_adjusted_ev", "friction_multiplier",
             "real_status", "real_decision_stage", "real_block_reason", "real_skip_reason",
             "real_target_quote", "real_attempt_quote", "real_kelly_raw_quote", "real_platform_min_quote",
@@ -818,8 +818,8 @@ class LiveRunner:
             _SIM_CURRENT["edge_down"] = round(edge_down, 4)
             _SIM_CURRENT["kelly_up_raw"] = round(kelly_up_raw, 4)
             _SIM_CURRENT["kelly_down_raw"] = round(kelly_down_raw, 4)
-            _SIM_CURRENT["up_prob_ok"] = (p_up >= min_side_prob)
-            _SIM_CURRENT["down_prob_ok"] = (p_down >= min_side_prob)
+            _SIM_CURRENT["up_prob_ok"] = (p_up > min_side_prob)
+            _SIM_CURRENT["down_prob_ok"] = (p_down > min_side_prob)
 
         try:
             best_dir, best_ev, ask_up, ask_down = self._resolve_best_direction_by_ev(event, window_id, phase=phase)
@@ -833,10 +833,15 @@ class LiveRunner:
             _SIM_CURRENT["intent_allowed"] = False
             _SIM_CURRENT["intent_reason"] = "no_direction_passed_candidate_filter"
             _SIM_CURRENT["lifecycle_phase_policy"] = "candidate_filter"
-            _SIM_CURRENT["req_prob"] = 0.35 if phase <= 1 else 0.60
-            _SIM_CURRENT["trend_max_ask_exclusive"] = 0.80 if phase >= 2 else None
-            _SIM_CURRENT["friction_multiplier"] = 1.005 if phase >= 2 else None
-            _SIM_CURRENT["candidate_filter_reason"] = "phase0/1 need p>=0.35; phase2/3/4 need p>=0.60 to select a direction"
+            req_prob_none, req_confirm_none, req_ev_none = self._phase_gate_rule(phase)
+            _SIM_CURRENT["req_prob"] = req_prob_none
+            _SIM_CURRENT["req_ev"] = req_ev_none
+            _SIM_CURRENT["trend_max_ask_exclusive"] = 0.80
+            _SIM_CURRENT["friction_multiplier"] = 1.005
+            _SIM_CURRENT["p_confirm_required_sec"] = req_confirm_none
+            _SIM_CURRENT["p_confirm_ok"] = False
+            _SIM_CURRENT["p_confirm_threshold"] = req_prob_none
+            _SIM_CURRENT["candidate_filter_reason"] = f"phase{phase} needs p>{req_prob_none} to select a direction"
             self._write_current_window_snapshot()
             return
 
@@ -897,6 +902,8 @@ class LiveRunner:
             return
 
         # 5-minute lifecycle strategy: classify intent first, then apply phase-aware policy.
+        phase_req_prob, phase_confirm_sec, phase_req_net_ev = self._phase_gate_rule(phase)
+        p_confirm_ok = self._is_probability_above(window_id, best_dir, seconds=phase_confirm_sec, threshold=phase_req_prob)
         lifecycle = self._evaluate_lifecycle_intent_gate(
             phase=phase,
             p_side=best_side_prob,
@@ -906,8 +913,8 @@ class LiveRunner:
             kelly_raw=best_kelly_raw,
             has_same_position=has_same_position,
             has_opposite_position=has_opposite_position,
-            p_rising_5s=self._is_probability_rising(window_id, best_dir, seconds=5),
-            p_rising_8s=self._is_probability_rising(window_id, best_dir, seconds=8),
+            p_confirm_ok=p_confirm_ok,
+            p_confirm_sec=phase_confirm_sec,
         )
         trade_intent = str(lifecycle["trade_intent"])
         req_edge = float(lifecycle["req_edge"])
@@ -940,6 +947,9 @@ class LiveRunner:
             "p_rising_required_sec",
             "p_rising_5s",
             "p_rising_8s",
+            "p_confirm_required_sec",
+            "p_confirm_ok",
+            "p_confirm_threshold",
             "friction_adjusted_ev",
             "friction_multiplier",
         ):
@@ -1764,6 +1774,17 @@ class LiveRunner:
         except Exception as e:
             logger.debug("write_sim_record failed: %s", e)
 
+    @staticmethod
+    def _phase_gate_rule(phase: int) -> tuple[float, int, float]:
+        rules = {
+            0: (0.60, 2, 0.08),
+            1: (0.65, 3, 0.06),
+            2: (0.70, 4, 0.04),
+            3: (0.75, 5, 0.02),
+            4: (0.80, 6, 0.0),
+        }
+        return rules.get(max(0, min(4, int(phase))), rules[4])
+
     def _record_probability_history(self, window_id: str, *, p_up: float, p_down: float) -> None:
         if not window_id:
             return
@@ -1775,6 +1796,18 @@ class LiveRunner:
         for key in list(self._prob_history.keys()):
             if key != str(window_id):
                 self._prob_history.pop(key, None)
+
+    def _is_probability_above(self, window_id: str, direction: str, *, seconds: int, threshold: float) -> bool:
+        hist = self._prob_history.get(str(window_id)) or []
+        required = max(1, int(seconds))
+        if len(hist) < required:
+            return False
+        now_ms = int(time.time() * 1000)
+        recent = [x for x in hist if int(x[0]) >= now_ms - required * 1000]
+        if len(recent) < required:
+            return False
+        vals = [float(x[1] if direction == "up" else x[2]) for x in recent[-required:]]
+        return all(v > float(threshold) for v in vals)
 
     def _is_probability_rising(self, window_id: str, direction: str, *, seconds: int) -> bool:
         hist = self._prob_history.get(str(window_id)) or []
@@ -1819,8 +1852,8 @@ class LiveRunner:
         kelly_raw: float,
         has_same_position: bool,
         has_opposite_position: bool,
-        p_rising_5s: bool = False,
-        p_rising_8s: bool = False,
+        p_confirm_ok: bool = False,
+        p_confirm_sec: int = 0,
     ) -> dict[str, Any]:
         intent = cls._classify_lifecycle_trade_intent(
             phase=phase,
@@ -1837,8 +1870,8 @@ class LiveRunner:
             "trade_intent": intent,
             "has_same_position": bool(has_same_position),
             "has_opposite_position": bool(has_opposite_position),
-            "p_rising_5s": bool(p_rising_5s),
-            "p_rising_8s": bool(p_rising_8s),
+            "p_confirm_ok": bool(p_confirm_ok),
+            "p_confirm_required_sec": int(p_confirm_sec or 0),
         }
 
         def result(allowed: bool, reason: str, policy: str, req_prob: float, req_edge: float, req_ev: float, req_kelly: float, extra: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -1856,6 +1889,30 @@ class LiveRunner:
                 "req_kelly_raw": req_kelly,
                 "meta": merged,
             }
+
+        req_prob, confirm_sec, req_net_ev = cls._phase_gate_rule(phase)
+        friction_adjusted_ev = cls._calc_ev(p_side, ask * 1.005)
+        p_ok = bool(p_confirm_ok) and p_side > req_prob
+        ask_ok = ask < 0.80
+        ev_ok = friction_adjusted_ev > req_net_ev
+        ok = p_ok and ask_ok and ev_ok
+        return result(
+            ok,
+            f"allowed_phase{max(0, min(4, int(phase)))}_gate" if ok else f"phase{max(0, min(4, int(phase)))}_gate_not_met",
+            f"phase{max(0, min(4, int(phase)))}_p_confirm_net_ev",
+            req_prob,
+            -1.0,
+            req_net_ev,
+            0.0,
+            {
+                "trend_max_ask_exclusive": 0.80,
+                "p_confirm_required_sec": int(confirm_sec),
+                "p_confirm_ok": bool(p_confirm_ok),
+                "p_confirm_threshold": float(req_prob),
+                "friction_adjusted_ev": round(friction_adjusted_ev, 6),
+                "friction_multiplier": 1.005,
+            },
+        )
 
         if intent == "HEDGE":
             if phase <= 1:
@@ -2032,11 +2089,11 @@ class LiveRunner:
         if ask_up <= 0 or ask_up >= 1 or ask_dn <= 0 or ask_dn >= 1:
             return None, -1.0, ask_up, ask_dn
         if phase <= 1:
-            min_dir_prob = 0.35
+            min_dir_prob = self._phase_gate_rule(phase)[0]
         else:
-            min_dir_prob = 0.60
-        up_allowed = p_up >= min_dir_prob
-        down_allowed = p_down >= min_dir_prob
+            min_dir_prob = self._phase_gate_rule(phase)[0]
+        up_allowed = p_up > min_dir_prob
+        down_allowed = p_down > min_dir_prob
         if not up_allowed and not down_allowed:
             return None, -1.0, ask_up, ask_dn
         ev_up = self._calc_ev(p_up, ask_up) if up_allowed else -1.0
