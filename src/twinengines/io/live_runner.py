@@ -725,7 +725,7 @@ class LiveRunner:
         d_abs = float(event.get("d_abs_pct") or 0)
         d_signed = float(event.get("d_signed_pct") or 0)
         best_prob_dir = "up" if p_up >= p_down else "down"
-        if self.exit_guard is not None and is_real_mode and window_id and phase >= 2:
+        if self.exit_guard is not None and is_real_mode and window_id:
             try:
                 self.exit_guard.observe_probability(window_id=window_id, p_up=p_up, p_down=p_down)
             except Exception as e:
@@ -786,6 +786,20 @@ class LiveRunner:
         if best_dir is None:
             _SIM_CURRENT["status"] = "EV neg"; self._write_current_window_snapshot(); return
 
+        signal_meta = {
+            "phase": phase,
+            "sec_in_window": int(elapsed_sec),
+            "elapsed_sec": round(elapsed_sec, 2),
+            "p_up": round(p_up, 6),
+            "p_down": round(p_down, 6),
+            "best_prob_dir": best_prob_dir,
+        }
+        def _record_decision(fill_amt, status, reason, extra=None):
+            meta = dict(signal_meta)
+            if extra:
+                meta.update(extra)
+            self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, fill_amt, status, reason, d_abs, meta=meta)
+
         best_side_prob = p_up if best_dir == "up" else p_down
         ask = ask_up if best_dir == "up" else ask_down
         best_edge = best_side_prob - ask
@@ -798,7 +812,7 @@ class LiveRunner:
                 _SIM_CURRENT["status"] = f"floor_p<{floor_min_prob:.2f}"
                 _SIM_CURRENT["floor_price_entry"] = True
                 _SIM_CURRENT["floor_min_prob"] = floor_min_prob
-                self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, 0, "rejected", f"floor_p<{floor_min_prob:.2f}", d_abs)
+                _record_decision(0, "rejected", f"floor_p<{floor_min_prob:.2f}", {"floor_price_entry": True, "floor_min_prob": floor_min_prob})
                 self._write_current_window_snapshot()
                 return
         
@@ -814,25 +828,32 @@ class LiveRunner:
         _SIM_CURRENT["req_edge"] = round(req_edge, 4)
         _SIM_CURRENT["req_ev"] = round(req_ev, 4)
         _SIM_CURRENT["req_kelly_raw"] = round(req_kelly_raw, 4)
+        signal_meta.update({
+            "req_edge": round(req_edge, 4),
+            "req_ev": round(req_ev, 4),
+            "req_kelly_raw": round(req_kelly_raw, 4),
+            "best_edge": round(best_edge, 4),
+            "best_kelly_raw": round(best_kelly_raw, 4),
+        })
         
         if best_side_prob < min_side_prob:
             _SIM_CURRENT["status"] = f"p<{min_side_prob:.2f}"
-            self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, 0, "rejected", f"p<{min_side_prob:.2f}", d_abs)
+            _record_decision(0, "rejected", f"p<{min_side_prob:.2f}")
             self._write_current_window_snapshot()
             return
         if best_edge < req_edge:
             _SIM_CURRENT["status"] = f"edge<{req_edge:.3f}"
-            self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, 0, "rejected", f"edge<{req_edge:.3f}", d_abs)
+            _record_decision(0, "rejected", f"edge<{req_edge:.3f}")
             self._write_current_window_snapshot()
             return
         if best_ev_simple < req_ev:
             _SIM_CURRENT["status"] = f"EV<{req_ev:.2f}"
-            self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, 0, "rejected", f"EV<{req_ev:.2f}", d_abs)
+            _record_decision(0, "rejected", f"EV<{req_ev:.2f}")
             self._write_current_window_snapshot()
             return
         if best_kelly_raw < req_kelly_raw:
             _SIM_CURRENT["status"] = f"KellyRaw<{req_kelly_raw:.2f}"
-            self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, 0, "rejected", f"KellyRaw<{req_kelly_raw:.2f}", d_abs)
+            _record_decision(0, "rejected", f"KellyRaw<{req_kelly_raw:.2f}")
             self._write_current_window_snapshot()
             return
         sizing_fraction, max_stake_ratio, sizing_tier = self._direction_sizing_profile(
@@ -851,7 +872,13 @@ class LiveRunner:
         _SIM_CURRENT["max_stake_ratio"] = round(max_stake_ratio, 4)
         _SIM_CURRENT["sizing_tier"] = sizing_tier
         _SIM_CURRENT["floor_price_entry"] = bool(is_floor_price_entry)
-        if self.exit_guard is not None and is_real_mode and window_id and phase >= 2:
+        signal_meta.update({
+            "sizing_fraction": round(sizing_fraction, 4),
+            "max_stake_ratio": round(max_stake_ratio, 4),
+            "sizing_tier": sizing_tier,
+            "floor_price_entry": bool(is_floor_price_entry),
+        })
+        if self.exit_guard is not None and is_real_mode and window_id:
             try:
                 self.exit_guard.observe_signal(
                     window_id=window_id,
@@ -917,9 +944,18 @@ class LiveRunner:
                                     token_id=token_id,
                                     target_quote=float(real_kelly_total),
                                     limit_price=float(limit_px),
-                                    note=f"p={best_side_prob:.3f} edge={best_edge:.3f} ev={best_ev_simple:.3f} kraw={best_kelly_raw:.3f} kelly={real_kelly_total:.2f}",
+                                    note=f"p={best_side_prob:.3f} edge={best_edge:.3f} ev={best_ev_simple:.3f} kraw={best_kelly_raw:.3f} kelly={real_kelly_total:.2f} phase={phase} sec={int(elapsed_sec)} tier={sizing_tier}",
                                     sizing_tier=sizing_tier,
                                     max_attempt_quote=float(real_single),
+                                    decision_meta={
+                                        **signal_meta,
+                                        "best_side_prob": round(best_side_prob, 6),
+                                        "best_edge": round(best_edge, 6),
+                                        "best_ev": round(best_ev_simple, 6),
+                                        "best_kelly_raw": round(best_kelly_raw, 6),
+                                        "target_quote": round(float(real_kelly_total), 4),
+                                        "attempt_quote": round(float(real_single), 4),
+                                    },
                                 )
                                 _SIM_CURRENT["real_status"] = "real_fok_evaluated"
                                 _SIM_CURRENT["real_target_quote"] = round(float(real_kelly_total), 2)
@@ -932,8 +968,7 @@ class LiveRunner:
             filled_set.add(window_id)
             _SIM_CURRENT["status"] = "locked_reverse"
             _SIM_CURRENT["best_dir"] = best_dir
-            self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, 0,
-                                   "rejected", f"reverse_lock:{best_dir}vs{win_dir[window_id]}", d_abs)
+            _record_decision(0, "rejected", f"reverse_lock:{best_dir}vs{win_dir[window_id]}")
             self._write_current_window_snapshot()
             return
 
@@ -955,7 +990,7 @@ class LiveRunner:
                 _SIM_CURRENT["status"] = f"platform_min<{platform_min_quote:.2f}"
                 _SIM_CURRENT["platform_min_quote"] = round(platform_min_quote, 2)
                 _SIM_CURRENT["best_dir"] = best_dir
-                self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, 0, "rejected", f"platform_min<{platform_min_quote:.2f}", d_abs)
+                _record_decision(0, "rejected", f"platform_min<{platform_min_quote:.2f}")
                 self._write_current_window_snapshot()
                 return
             proposed_target = platform_min_quote
@@ -988,7 +1023,11 @@ class LiveRunner:
             single = 2.50
 
         win_budget[window_id] = remaining - single
-        self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, single, "filled", "FILLED", d_abs)
+        _record_decision(single, "filled", "FILLED", {
+            "budget_remain": round(win_budget.get(window_id, 0), 2),
+            "budget_total": round(kelly_total, 2),
+            "target_upgraded": bool(_SIM_CURRENT.get("target_upgraded", False)),
+        })
 
         if win_budget[window_id] <= 0:
             filled_set.add(window_id)
@@ -1084,6 +1123,7 @@ class LiveRunner:
         note: str,
         sizing_tier: str = "base",
         max_attempt_quote: Optional[float] = None,
+        decision_meta: Optional[dict[str, Any]] = None,
     ) -> Optional[OrderTicket]:
         state = _REAL_WINDOW_ORDERS.get(window_id)
         min_shares = float(POLYMARKET_PLATFORM.min_limit_order_shares)
@@ -1116,10 +1156,13 @@ class LiveRunner:
                 "attempt_seq": 0,
                 "no_fill_count": 0,
                 "created_ts_ms": int(time.time() * 1000),
+                "decision_meta": dict(decision_meta or {}),
             }
             _REAL_WINDOW_ORDERS[window_id] = state
         else:
             filled_shares = float(state.get("filled_shares", 0.0))
+            if decision_meta:
+                state["decision_meta"] = dict(decision_meta)
             no_position = filled_shares <= 1e-9 and not bool(state.get("unknown_outcome"))
             if best_dir != state.get("direction"):
                 if no_position:
@@ -1245,42 +1288,70 @@ class LiveRunner:
         client_order_id = f"{window_id}:{state['direction']}:fok:{state['attempt_seq']}"
         state["last_client_order_id"] = client_order_id
         state["last_attempt_shares"] = float(attempt_shares)
+        order_note = f"{note} nofill={no_fill_count} chunk_shares={attempt_shares:.4f}"
+        if state.get("decision_meta"):
+            order_note = f"{order_note} meta={json.dumps(state.get('decision_meta'), sort_keys=True, default=str)[:500]}"
         ticket = self.submit_signal_order(
             window_id=window_id,
             side=str(state["side_label"]),
             direction=str(state["direction"]),
             size_quote_usdc=attempt_quote,
             limit_price=float(state["limit_price"]),
-            note=f"{note} nofill={no_fill_count} chunk_shares={attempt_shares:.4f}",
+            note=order_note,
             fixed_size_shares=attempt_shares,
             fixed_client_order_id=client_order_id,
+            audit_context=dict(state.get("decision_meta") or {}),
         )
         self._apply_real_fok_ticket(state, ticket)
         return ticket
 
-    def _write_sim_record(self, wid, trig, p_best, p_side, t_rem, au, ad, best_dir, best_ev, fill_amt, status, reason, d_abs=0):
+    def _write_sim_record(self, wid, trig, p_best, p_side, t_rem, au, ad, best_dir, best_ev, fill_amt, status, reason, d_abs=0, meta=None):
         try:
             import json as _j, os as _o
+            meta = dict(meta or {})
             _o.makedirs("logs", exist_ok=True)
             ask = au if best_dir == "up" else ad if best_dir == "down" else None
             edge = (float(p_side) - float(ask)) if ask is not None else None
             kelly_raw = self._raw_kelly_ratio(float(p_side), float(ask)) if ask is not None else None
-            rec = {"window_id": wid, "status": status, "reason": reason,
-                   "trigger_pattern": trig, "p_best": round(p_best,3), "p_side": round(p_side,3),
-                   "T_remaining": round(t_rem,0), "ask_up": au, "ask_down": ad,
-                   "best_dir": best_dir, "best_ev": round(best_ev,4),
-                   "edge": None if edge is None else round(edge, 4),
-                   "kelly_raw": None if kelly_raw is None else round(kelly_raw, 4),
-                   "fill_amount": round(fill_amt,2),
-                   "d_abs_pct": round(d_abs,4),
-                   "ts_ms": int(__import__("time").time() * 1000)}
-            with open("logs/shadow_orders.jsonl", "ab+") as _f:
+            rec = {
+                "window_id": wid,
+                "status": status,
+                "reason": reason,
+                "trigger_pattern": trig,
+                "phase": meta.get("phase"),
+                "sec_in_window": meta.get("sec_in_window"),
+                "elapsed_sec": meta.get("elapsed_sec"),
+                "p_up": meta.get("p_up"),
+                "p_down": meta.get("p_down"),
+                "p_best": round(p_best, 3),
+                "p_side": round(p_side, 3),
+                "best_side_prob": round(p_side, 4),
+                "T_remaining": round(t_rem, 0),
+                "ask_up": au,
+                "ask_down": ad,
+                "best_dir": best_dir,
+                "best_ev": round(best_ev, 4),
+                "edge": None if edge is None else round(edge, 4),
+                "kelly_raw": None if kelly_raw is None else round(kelly_raw, 4),
+                "req_edge": meta.get("req_edge"),
+                "req_ev": meta.get("req_ev"),
+                "req_kelly_raw": meta.get("req_kelly_raw"),
+                "sizing_fraction": meta.get("sizing_fraction"),
+                "max_stake_ratio": meta.get("max_stake_ratio"),
+                "sizing_tier": meta.get("sizing_tier"),
+                "fill_amount": round(fill_amt, 2),
+                "d_abs_pct": round(d_abs, 4),
+                "ts_ms": int(__import__("time").time() * 1000),
+            }
+            rec.update({k: v for k, v in meta.items() if k not in rec and k.startswith("real_")})
+            with open(self._runtime_path("logs", "shadow_orders.jsonl"), "ab+") as _f:
                 _f.seek(0, 2); pos = _f.tell()
                 if pos > 0:
                     _f.seek(pos - 1)
                     if _f.read(1) != b"\n": _f.write(b"\n")
                 _f.write((_j.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8"))
-        except: pass
+        except Exception as e:
+            logger.debug("write_sim_record failed: %s", e)
 
     @staticmethod
     def _calc_ev(win_prob: float, ask: float) -> float:
@@ -1643,6 +1714,7 @@ class LiveRunner:
         note: str = "",
         fixed_size_shares: Optional[float] = None,
         fixed_client_order_id: Optional[str] = None,
+        audit_context: Optional[dict[str, Any]] = None,
     ) -> Optional[OrderTicket]:
         """实盘下单主入口: FOK 限价 + 最低手数合规。窗口状态机可传入固定价格/固定股数。
 
@@ -1730,6 +1802,7 @@ class LiveRunner:
             comp_size_shares = float(comp.size_shares)
 
         client_order_id = fixed_client_order_id or f"{window_id}:{side}:{uuid.uuid4().hex[:8]}"
+        audit_context = dict(audit_context or {})
         if not self.position_lock.try_acquire(window_id, side=side, client_order_id=client_order_id, note=note):
             logger.warning("submit_signal_order: window lock busy window_id=%s", window_id)
             return None
@@ -1760,6 +1833,7 @@ class LiveRunner:
                         "client_order_id": client_order_id,
                         "ref_limit_price": float(limit_price),
                         "state": ticket.state.value,
+                        **audit_context,
                     })
                 if self.exit_guard is not None:
                     try:
@@ -1824,6 +1898,7 @@ class LiveRunner:
                         "client_order_id": client_order_id,
                         "state": ticket.state.value,
                         "error": ticket.last_error,
+                        **audit_context,
                     })
                 if self.alerting is not None and ticket.state in (
                     OrderState.REJECTED, OrderState.CANCELLED, OrderState.TIMEOUT,
