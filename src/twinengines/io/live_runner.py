@@ -914,6 +914,47 @@ class LiveRunner:
             _record_decision(0, "rejected", f"KellyRaw<{req_kelly_raw:.2f}")
             self._write_current_window_snapshot()
             return
+
+        same_real = _REAL_WINDOW_ORDERS.get(dir_key) or {}
+        has_same_position = dir_key in win_target or float(same_real.get("filled_shares", 0.0) or 0.0) > 1e-9
+        phase3_high_price_low_ev_guard = (
+            phase >= 3
+            and float(ask) >= 0.70
+            and float(best_ev_simple) < 0.20
+            and not has_same_position
+            and not has_opposite_position
+        )
+        if phase3_high_price_low_ev_guard:
+            _SIM_CURRENT["status"] = "phase3_high_price_low_ev_shadow_only"
+            _SIM_CURRENT["phase3_guard"] = "high_price_low_ev_first_entry"
+            _record_decision(0, "rejected", "phase3_high_price_low_ev_shadow_only", {
+                "phase3_guard": "high_price_low_ev_first_entry",
+                "shadow_only": True,
+                "phase3_high_price_guard_min_ask": 0.70,
+                "phase3_high_price_guard_min_ev": 0.20,
+            })
+            self._write_current_window_snapshot()
+            return
+
+        phase3_same_direction_add_guard = (
+            phase >= 3
+            and has_same_position
+            and not has_opposite_position
+            and (float(best_side_prob) < 0.80 or float(best_edge) < 0.20)
+        )
+        if phase3_same_direction_add_guard:
+            _SIM_CURRENT["status"] = "phase3_add_shadow_only"
+            _SIM_CURRENT["phase3_guard"] = "same_direction_add_requires_p80_edge20"
+            _record_decision(0, "rejected", "phase3_add_shadow_only", {
+                "phase3_guard": "same_direction_add_requires_p80_edge20",
+                "shadow_only": True,
+                "phase3_add_min_prob": 0.80,
+                "phase3_add_min_edge": 0.20,
+                "has_same_position": True,
+            })
+            self._write_current_window_snapshot()
+            return
+
         sizing_fraction, max_stake_ratio, sizing_tier = self._direction_sizing_profile(
             p_side=best_side_prob,
             edge=best_edge,
