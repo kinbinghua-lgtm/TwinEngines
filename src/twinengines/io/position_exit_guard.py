@@ -58,6 +58,8 @@ class PositionExitGuardCfg:
     early_entry_reversal_exit_sec: float = 45.0
     early_entry_adverse_prob_exit: float = 0.58
     early_entry_prob_gap_exit: float = 0.16
+    late_reversal_relax_seconds_left: float = 15.0
+    late_reversal_adverse_prob_exit: float = 0.93
 
 
 class PositionExitGuard:
@@ -261,6 +263,13 @@ class PositionExitGuard:
         prob_gap = float(adverse_prob) - float(held_prob)
         now_ms = int(ts_ms or time.time() * 1000)
         age_sec = max(0.0, (now_ms - int(pos.opened_ts_ms or now_ms)) / 1000.0)
+        seconds_left = max(0.0, (int(pos.market_end_ts_ms) - now_ms) / 1000.0)
+        late_relaxed = seconds_left <= float(self.cfg.late_reversal_relax_seconds_left)
+        catastrophic_adverse_prob_exit = float(self.cfg.catastrophic_adverse_prob_exit)
+        strong_adverse_prob_exit = float(self.cfg.strong_adverse_prob_exit)
+        if late_relaxed:
+            catastrophic_adverse_prob_exit = max(catastrophic_adverse_prob_exit, float(self.cfg.late_reversal_adverse_prob_exit))
+            strong_adverse_prob_exit = max(strong_adverse_prob_exit, float(self.cfg.late_reversal_adverse_prob_exit))
         reason: Optional[str] = None
         if (
             age_sec <= float(self.cfg.early_entry_reversal_exit_sec)
@@ -268,9 +277,9 @@ class PositionExitGuard:
             and prob_gap >= float(self.cfg.early_entry_prob_gap_exit)
         ):
             reason = "early_entry_reversal"
-        elif adverse_prob >= float(self.cfg.catastrophic_adverse_prob_exit) and held_prob <= max(float(self.cfg.held_prob_floor_exit), 1.0 - float(self.cfg.catastrophic_adverse_prob_exit)):
+        elif adverse_prob >= catastrophic_adverse_prob_exit and held_prob <= max(float(self.cfg.held_prob_floor_exit), 1.0 - catastrophic_adverse_prob_exit):
             reason = "catastrophic_probability_reversal"
-        elif adverse_prob >= float(self.cfg.strong_adverse_prob_exit) and prob_gap >= float(self.cfg.strong_prob_gap_exit):
+        elif adverse_prob >= strong_adverse_prob_exit and prob_gap >= float(self.cfg.strong_prob_gap_exit):
             reason = "direction_probability_reversed"
         elif previous_held_max and previous_held_max > 0 and held_prob <= previous_held_max - float(self.cfg.held_prob_drawdown_exit) and held_prob < 0.62:
             reason = "held_probability_decay"
@@ -291,6 +300,10 @@ class PositionExitGuard:
             "adverse_prob": round(float(adverse_prob), 4),
             "prob_gap": round(float(prob_gap), 4),
             "position_age_sec": round(float(age_sec), 2),
+            "seconds_left": round(float(seconds_left), 2),
+            "late_reversal_relaxed": bool(late_relaxed),
+            "effective_strong_adverse_prob_exit": round(float(strong_adverse_prob_exit), 4),
+            "effective_catastrophic_adverse_prob_exit": round(float(catastrophic_adverse_prob_exit), 4),
             "max_held_prob_seen": round(float(pos.max_held_prob_seen or 0.0), 4),
             "ts_ms": now_ms,
         })
