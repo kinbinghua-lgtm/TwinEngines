@@ -1183,17 +1183,15 @@ class LiveRunner:
                                     if trade_intent != "HEDGE":
                                         self._platform_min_boost_used.add(boost_key)
                                     _SIM_CURRENT["real_platform_min_boost_used"] = True
-                                elif boost_cap < platform_min_quote:
+                                else:
                                     _SIM_CURRENT["real_status"] = "real_platform_min_not_met"
-                                    _SIM_CURRENT["real_block_reason"] = "platform_min_above_allowed_cap"
-                                    _audit_real_decision("not_submitted", "platform_min_above_allowed_cap", {
+                                    _SIM_CURRENT["real_block_reason"] = "platform_min_above_allowed_cap" if boost_cap < platform_min_quote else "platform_min_boost_unavailable"
+                                    _audit_real_decision("not_submitted", str(_SIM_CURRENT["real_block_reason"]), {
                                         "boost_cap": round(float(boost_cap), 4) if math.isfinite(float(boost_cap)) else None,
                                         "platform_min_quote": round(float(platform_min_quote), 4),
                                         "one_time_boost_available": bool(one_time_boost_available),
                                     })
                                     real_kelly_total = 0.0
-                                else:
-                                    real_kelly_total = platform_min_quote
                             if real_kelly_total >= platform_min_quote:
                                 window_abs_cap = runtime_window_cap_abs if runtime_window_cap_abs > 0 else float("inf")
                                 window_ratio_cap = float(real_equity) * effective_max_stake_ratio if effective_max_stake_ratio > 0 else float("inf")
