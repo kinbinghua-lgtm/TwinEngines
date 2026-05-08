@@ -1880,11 +1880,11 @@ class LiveRunner:
 
         if intent == "ENTRY_VALUE":
             if phase <= 0:
-                req_prob, req_edge, req_ev, req_kelly = 0.35, -1.0, 0.40, 0.0
+                req_prob, req_edge, req_ev, req_kelly = 0.35, -1.0, 0.30, 0.0
                 ok = p_side >= req_prob and ev > req_ev
                 return result(ok, "allowed_phase0_ev" if ok else "phase0_ev_quality_not_met", "phase0_ev_only", req_prob, req_edge, req_ev, req_kelly)
             if phase == 1:
-                req_prob, req_edge, req_ev, req_kelly = 0.35, -1.0, 0.30, 0.0
+                req_prob, req_edge, req_ev, req_kelly = 0.35, -1.0, 0.15, 0.0
                 ok = p_side >= req_prob and ev > req_ev
                 return result(ok, "allowed_phase1_ev" if ok else "phase1_ev_quality_not_met", "phase1_ev_only", req_prob, req_edge, req_ev, req_kelly)
             if phase >= 3:
@@ -1896,9 +1896,9 @@ class LiveRunner:
             return result(ok, "allowed_phase2_value" if ok else "phase2_value_quality_not_met", "phase2_value_ev_first", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask_exclusive": 0.80})
 
         if phase <= 0:
-            return result(False, "phase0_unreachable_trend", "phase0_ev_only", 0.35, -1.0, 0.40, 0.0)
+            return result(False, "phase0_unreachable_trend", "phase0_ev_only", 0.35, -1.0, 0.30, 0.0)
         if phase == 1:
-            return result(False, "phase1_unreachable_trend", "phase1_ev_only", 0.35, -1.0, 0.30, 0.0)
+            return result(False, "phase1_unreachable_trend", "phase1_ev_only", 0.35, -1.0, 0.15, 0.0)
         if phase == 2:
             req_prob, req_edge, req_ev, req_kelly = 0.60, -1.0, 0.0, 0.0
             friction_adjusted_ev = self._calc_ev(p_side, ask * 1.005)

@@ -489,6 +489,41 @@ def summary_payload(root: Path) -> dict[str, Any]:
     shadow_equity = read_float(root / "data_runtime" / "sim_equity.txt")
     return {"ok": True, "real_balance_usdc": real_balance, "real_pending_redeem_usdc": None, "real_redeem_ok": None, "shadow_equity_usdc": shadow_equity, "shadow_equity_note": None if shadow_equity is not None else "无影子账户数据"}
 
+def _phase_boxes_for_decision(phase_num, conditions):
+    titles = {
+        0: "EV > 0.30",
+        1: "EV > 0.15",
+        2: "TREND",
+        3: "TREND + 连续5s",
+        4: "TREND + 连续8s",
+    }
+    boxes = []
+    current = phase_num if isinstance(phase_num, int) and 0 <= phase_num <= 4 else None
+    for ph in range(5):
+        if current is None:
+            state = "waiting"
+            summary = "等待阶段识别"
+            note = "暂无当前阶段数据"
+            conds = []
+        elif ph < current:
+            state = "cleared"
+            summary = "阶段已结束"
+            note = "已清空，避免旧条件污染当前判断"
+            conds = []
+        elif ph > current:
+            state = "waiting"
+            summary = "等待进入"
+            note = "未到本阶段"
+            conds = []
+        else:
+            state = "current"
+            summary = "当前阶段"
+            note = "暂无条件数据"
+            conds = list(conditions or [])
+        boxes.append({"phase": ph, "title": titles.get(ph, ""), "state": state, "summary": summary, "note": note, "conditions": conds})
+    return boxes
+
+
 def current_decision_payload(root: Path) -> dict[str, Any]:
     tick = latest_naked_tick(root)
     if tick:
@@ -542,7 +577,7 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
             c("confidence", "方向置信度", "pass" if confidence is not None and confidence >= 0.51 else "fail" if confidence is not None else "unknown", f"p_up={p_up if p_up is not None else '--'} p_down={p_down if p_down is not None else '--'} confidence={confidence if confidence is not None else '--'} 阈值=0.51"),
             c("edge", "EV/edge", "pass" if edge is not None and edge >= 0.08 else "fail" if edge is not None else "unknown", f"fair={fair if fair is not None else '--'} edge={edge if edge is not None else '--'} 需要>=0.08"),
         ]
-        return {"ok": True, "window_id": window_id, "window_label": window_label(window_id), "seq": seq, "seq_display": seq_display, "seq_total": seq_total, "prefix": seq, "T_remaining": T, "server_ts_ms": int(time.time() * 1000), "p_up": p_up, "p_down": p_down, "ev_up": edge if best_dir == "up" else None, "ev_down": edge if best_dir == "down" else None, "best_dir": best_dir, "best_dir_label": best_dir.upper() if best_dir else "未确定", "decision_mode": zh_strategy_name("naked-third-digit-live"), "evaluated_direction": best_dir, "evaluated_direction_label": best_dir.upper() if best_dir else "未确定", "evaluated_ask": best_ask, "evaluated_bid": best_bid, "ask_up": best_ask if best_dir == "up" else None, "ask_down": best_ask if best_dir == "down" else None, "bid_up": best_bid if best_dir == "up" else None, "bid_down": best_bid if best_dir == "down" else None, "fair_prob_side": fair, "best_ev": edge, "real": {"status": real_status, "reason": reason, "target_quote": safe_float(tick.get("target_quote_usdc")), "target_shares": None, "filled_order": None, "conditions": real}, "shadow": {"status": "等待" if action == "waiting_minute3_close" else "同步实盘 tick", "reason": reason, "fill_amount": None, "ev": edge, "equity": sm.get("shadow_equity_usdc"), "conditions": []}, "source": "logs/naked_live_ticks.jsonl"}
+        return {"ok": True, "window_id": window_id, "window_label": window_label(window_id), "seq": seq, "seq_display": seq_display, "seq_total": seq_total, "prefix": seq, "T_remaining": T, "server_ts_ms": int(time.time() * 1000), "p_up": p_up, "p_down": p_down, "ev_up": edge if best_dir == "up" else None, "ev_down": edge if best_dir == "down" else None, "best_dir": best_dir, "best_dir_label": best_dir.upper() if best_dir else "未确定", "decision_mode": zh_strategy_name("naked-third-digit-live"), "evaluated_direction": best_dir, "evaluated_direction_label": best_dir.upper() if best_dir else "未确定", "evaluated_ask": best_ask, "evaluated_bid": best_bid, "ask_up": best_ask if best_dir == "up" else None, "ask_down": best_ask if best_dir == "down" else None, "bid_up": best_bid if best_dir == "up" else None, "bid_down": best_bid if best_dir == "down" else None, "fair_prob_side": fair, "best_ev": edge, "phase_boxes": _phase_boxes_for_decision(None, real), "real": {"status": real_status, "reason": reason, "target_quote": safe_float(tick.get("target_quote_usdc")), "target_shares": None, "filled_order": None, "conditions": real}, "shadow": {"status": "等待" if action == "waiting_minute3_close" else "同步实盘 tick", "reason": reason, "fill_amount": None, "ev": edge, "equity": sm.get("shadow_equity_usdc"), "conditions": []}, "source": "logs/naked_live_ticks.jsonl"}
     cw = read_json(root / "data_runtime" / "current_window.json") or {}; sm = summary_payload(root); wid = str(cw.get("window_id") or "")
     seq = item_seq(cw); seq_total = int(os.environ.get("WEBUI_SEQ_TOTAL", "3")); seq_display = (seq + "·" * max(0, seq_total - len(seq)))[:seq_total] if seq else "·" * seq_total
     filled = next((x for x in audit_rows(root, ("order_filled",), 80) if str(x.get("window_id") or "") == wid), None)
@@ -646,7 +681,7 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     else: reason = f"未提交：{fail['label']}未通过" if fail else f"未提交：{real_status}"
     fill = safe_float(cw.get("fill_amt") or cw.get("fill_amount")); shadow_status = str(cw.get("status") or "等待")
     shadow = [c("time","时间条件","pass" if T is not None and T >= 15 else "fail", f"T={T:.0f}s >= 15s" if T is not None else "无数据"), c("intent","阶段-意图门控", "pass" if intent_allowed is True else "fail" if intent_allowed is False else "unknown", f"{intent_reason}"), c("ev","动态 EV 条件","pass" if req_ev is not None and ev is not None and ev >= req_ev else "fail" if req_ev is not None and ev is not None else "unknown", f"EV={ev if ev is not None else '--'}，当前要求={req_ev if req_ev is not None else '--'}"), c("kelly","模拟 Kelly 条件","pass" if fill and fill >= 2.5 else "warn", f"影子 fill={fill if fill is not None else '--'}")]
-    return {"ok": True, "window_id": wid, "window_label": window_label(wid), "seq": seq, "seq_display": seq_display, "seq_total": seq_total, "prefix": seq, "T_remaining": T, "server_ts_ms": int(time.time() * 1000), "p_up": p_up, "p_down": p_down, "ev_up": ev_up, "ev_down": ev_down, "best_dir": best_dir, "best_dir_label": dir_label, "decision_mode": "方向概率", "evaluated_direction": best_dir, "evaluated_direction_label": dir_label, "evaluated_ask": ask, "ask_up": ask_up, "ask_down": ask_down, "best_ev": ev, "real": {"status": real_status, "reason": reason, "target_quote": real_target, "target_shares": shares, "filled_order": filled, "conditions": real}, "shadow": {"status": shadow_status, "reason": str(cw.get("reason") or shadow_status), "fill_amount": fill, "ev": ev, "equity": sm.get("shadow_equity_usdc"), "conditions": shadow}, "source": "current_window.json + derived"}
+    return {"ok": True, "window_id": wid, "window_label": window_label(wid), "seq": seq, "seq_display": seq_display, "seq_total": seq_total, "prefix": seq, "T_remaining": T, "server_ts_ms": int(time.time() * 1000), "p_up": p_up, "p_down": p_down, "ev_up": ev_up, "ev_down": ev_down, "best_dir": best_dir, "best_dir_label": dir_label, "decision_mode": "方向概率", "evaluated_direction": best_dir, "evaluated_direction_label": dir_label, "evaluated_ask": ask, "ask_up": ask_up, "ask_down": ask_down, "best_ev": ev, "phase_boxes": _phase_boxes_for_decision(phase_num, real), "real": {"status": real_status, "reason": reason, "target_quote": real_target, "target_shares": shares, "filled_order": filled, "conditions": real}, "shadow": {"status": shadow_status, "reason": str(cw.get("reason") or shadow_status), "fill_amount": fill, "ev": ev, "equity": sm.get("shadow_equity_usdc"), "conditions": shadow}, "source": "current_window.json + derived"}
 
 
 def create_app(*, root: Path, password: Optional[str] = None) -> Flask:
