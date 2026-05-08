@@ -792,15 +792,9 @@ class LiveRunner:
                              "phase": phase, "elapsed_sec": round(elapsed_sec, 0),
                              "startup_observe_only": bool(startup_observe_only),
                              "startup_missed_sec": round(startup_missed_sec, 1),
-                             "decision_pending": True,
+                             "decision_pending": False,
                              "min_side_prob": min_side_prob, "min_edge": min_edge,
                              "min_ev": min_ev, "min_kelly_raw": min_kelly_raw})
-        try:
-            import json as _j, os as _o
-            _o.makedirs(self._runtime_path("data_runtime"), exist_ok=True)
-            with open(self._runtime_path("data_runtime", "current_window.json"), "w") as _cw:
-                _cw.write(_j.dumps(_SIM_CURRENT, default=str))
-        except: pass
 
         if not window_id or t_rem < min_entry_t_rem:
             _SIM_CURRENT["status"] = f"T<{min_entry_t_rem:.0f}s"; self._write_current_window_snapshot(); return
