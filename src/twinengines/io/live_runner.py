@@ -65,14 +65,15 @@ from .state_store import KEY_LAST_EQUITY, StateStore, load_regime
 logger = get_logger(__name__)
 
 # 模块级状态 (跨回调保持)
-_SIM_FILLED: set[str] = set()        # 影子盘窗口锁仓
-_REAL_WINDOW_ORDERS: dict[str, dict[str, Any]] = {}  # 实盘窗口级 FOK 状态机
+_SIM_FILLED: set[str] = set()        # 影子盘方向级锁仓: window_id:direction
+_REAL_WINDOW_ORDERS: dict[str, dict[str, Any]] = {}  # 实盘窗口+方向级 FOK 状态机
 _SIM_CURRENT: dict = {}
-_SIM_WIN_BUDGET: dict[str, float] = {}  # 影子盘每窗口剩余 Kelly 预算
-_SIM_WIN_TARGET: dict[str, float] = {}  # 影子盘每窗口当前目标仓位
-_SIM_WIN_DIR: dict[str, str] = {}       # 影子盘每窗口首次成交方向
+_SIM_WIN_BUDGET: dict[str, float] = {}  # 影子盘每窗口+方向剩余 Kelly 预算
+_SIM_WIN_TARGET: dict[str, float] = {}  # 影子盘每窗口+方向当前目标仓位
+_SIM_WIN_DIR: dict[str, str] = {}       # 兼容旧审计字段
 _SIM_WIN_ENTRY_PROB: dict[str, float] = {}
 _SIM_WIN_LAST_PROB: dict[str, float] = {}
+_SIM_WIN_ENTRY_EV: dict[str, float] = {}
 _REAL_RETRYABLE_STATES = {OrderState.REJECTED, OrderState.CANCELLED, OrderState.TIMEOUT}
 _REAL_UNKNOWN_ERRORS = ("unknown", "timeout", "query_failed", "post_order_exception")
       # 真实盘每窗口首次成交方向
@@ -520,13 +521,14 @@ class LiveRunner:
 
     def _on_shadow_window_close(self, window_id: str) -> None:
         """窗口关闭时结算影子盘和真实盘。"""
-        global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR, _SIM_WIN_TARGET, _SIM_WIN_ENTRY_PROB, _SIM_WIN_LAST_PROB
-        _SIM_FILLED.discard(window_id)
-        _REAL_WINDOW_ORDERS.pop(window_id, None)
-        _SIM_WIN_BUDGET.pop(window_id, None)
-        _SIM_WIN_TARGET.pop(window_id, None)
-        _SIM_WIN_ENTRY_PROB.pop(window_id, None)
-        _SIM_WIN_LAST_PROB.pop(window_id, None)
+        global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR, _SIM_WIN_TARGET, _SIM_WIN_ENTRY_PROB, _SIM_WIN_LAST_PROB, _SIM_WIN_ENTRY_EV
+        for key in list(_SIM_FILLED):
+            if key == window_id or key.startswith(f"{window_id}:"):
+                _SIM_FILLED.discard(key)
+        for bucket in (_REAL_WINDOW_ORDERS, _SIM_WIN_BUDGET, _SIM_WIN_TARGET, _SIM_WIN_ENTRY_PROB, _SIM_WIN_LAST_PROB, _SIM_WIN_ENTRY_EV):
+            for key in list(bucket.keys()):
+                if key == window_id or str(key).startswith(f"{window_id}:"):
+                    bucket.pop(key, None)
         _SIM_WIN_DIR.pop(window_id, None)
         _SIM_CURRENT.clear()
         
@@ -571,11 +573,12 @@ class LiveRunner:
         first_sec = fills[0][3]
         total_pnl = 0.0
         won = False
-        for fa, fask, _, _ in fills:
-            won = actual_dir == best_dir
-            if won and fask > 0:
+        for fa, fask, bd, _ in fills:
+            won_leg = actual_dir == bd
+            won = won or won_leg
+            if won_leg and fask > 0:
                 total_pnl += fa * (1.0 / fask - 1.0)
-            elif won:
+            elif won_leg:
                 total_pnl += fa * 0.50
             else:
                 total_pnl += -fa
@@ -640,11 +643,12 @@ class LiveRunner:
         first_sec = fills[0][3]
         total_pnl = 0.0
         won = False
-        for fa, fask, _, _ in fills:
-            won = actual_dir == best_dir
-            if won and fask > 0:
+        for fa, fask, bd, _ in fills:
+            won_leg = actual_dir == bd
+            won = won or won_leg
+            if won_leg and fask > 0:
                 total_pnl += fa * (1.0 / fask - 1.0)
-            elif won:
+            elif won_leg:
                 total_pnl += fa * 0.50
             else:
                 total_pnl += -fa
@@ -707,7 +711,7 @@ class LiveRunner:
 
     def _simulate_order_from_signal(self, event: dict) -> None:
         global _SIM_FILLED, _SIM_CURRENT
-        global _SIM_WIN_BUDGET, _SIM_WIN_DIR, _SIM_WIN_TARGET, _SIM_WIN_ENTRY_PROB, _SIM_WIN_LAST_PROB
+        global _SIM_WIN_BUDGET, _SIM_WIN_DIR, _SIM_WIN_TARGET, _SIM_WIN_ENTRY_PROB, _SIM_WIN_LAST_PROB, _SIM_WIN_ENTRY_EV
         window_id = str(event.get("window_id") or "")
         # 真实盘是否活跃
         is_real_mode = (not self.cfg.dry_run_signals
@@ -828,6 +832,24 @@ class LiveRunner:
         best_edge = best_side_prob - ask
         best_ev_simple = self._calc_ev(best_side_prob, ask)
         best_kelly_raw = self._raw_kelly_ratio(best_side_prob, ask)
+        dir_key = f"{window_id}:{best_dir}"
+        opposite_dir = "down" if best_dir == "up" else "up"
+        opposite_key = f"{window_id}:{opposite_dir}"
+        existing_opposite_ev = float(_SIM_WIN_ENTRY_EV.get(opposite_key, 0.0) or 0.0)
+        opposite_real = _REAL_WINDOW_ORDERS.get(opposite_key) or {}
+        opposite_meta = opposite_real.get("decision_meta") if isinstance(opposite_real.get("decision_meta"), dict) else {}
+        existing_opposite_ev = max(existing_opposite_ev, float(opposite_meta.get("best_ev") or 0.0))
+        has_opposite_position = opposite_key in win_target or float(opposite_real.get("filled_shares", 0.0) or 0.0) > 1e-9
+        if has_opposite_position and best_ev_simple <= existing_opposite_ev + 1e-9:
+            _SIM_CURRENT["status"] = "reverse_ev_not_better"
+            _SIM_CURRENT["reverse_ev_required"] = round(existing_opposite_ev, 4)
+            _record_decision(0, "rejected", "reverse_ev_not_better", {
+                "opposite_dir": opposite_dir,
+                "opposite_ev": round(existing_opposite_ev, 4),
+                "reverse_ev": round(best_ev_simple, 4),
+            })
+            self._write_current_window_snapshot()
+            return
         is_floor_price_entry = ask < 0.10
         if is_floor_price_entry:
             floor_min_prob = 0.62
@@ -840,7 +862,7 @@ class LiveRunner:
                 return
         
         # 动态阈值：高概率放宽 EV 要求，低概率提高 EV 要求
-        req_edge, req_ev, req_kelly_raw = self._direction_min_thresholds(best_side_prob, phase=phase, elapsed_sec=elapsed_sec, has_position=window_id in win_dir)
+        req_edge, req_ev, req_kelly_raw = self._direction_min_thresholds(best_side_prob, phase=phase, elapsed_sec=elapsed_sec, has_position=dir_key in win_target)
         
         _SIM_CURRENT["best_dir"] = best_dir
         _SIM_CURRENT["best_side_prob"] = round(best_side_prob, 4)
@@ -885,7 +907,7 @@ class LiveRunner:
             ev=best_ev_simple,
             kelly_raw=best_kelly_raw,
             phase=phase,
-            has_position=window_id in win_dir,
+            has_position=dir_key in win_target,
         )
         if is_floor_price_entry:
             max_stake_ratio = min(max_stake_ratio, 0.06)
@@ -1030,12 +1052,19 @@ class LiveRunner:
                 _SIM_CURRENT["real_status"] = "real_submit_error"
 
         if window_id in win_dir and best_dir != win_dir[window_id]:
-            filled_set.add(window_id)
-            _SIM_CURRENT["status"] = "locked_reverse"
-            _SIM_CURRENT["best_dir"] = best_dir
-            _record_decision(0, "rejected", f"reverse_lock:{best_dir}vs{win_dir[window_id]}")
-            self._write_current_window_snapshot()
-            return
+            if best_ev_simple <= existing_opposite_ev + 1e-9:
+                filled_set.add(dir_key)
+                _SIM_CURRENT["status"] = "reverse_ev_not_better"
+                _SIM_CURRENT["best_dir"] = best_dir
+                _record_decision(0, "rejected", "reverse_ev_not_better", {
+                    "opposite_dir": opposite_dir,
+                    "opposite_ev": round(existing_opposite_ev, 4),
+                    "reverse_ev": round(best_ev_simple, 4),
+                })
+                self._write_current_window_snapshot()
+                return
+            _SIM_CURRENT["reverse_ev_accepted"] = True
+            _SIM_CURRENT["opposite_ev"] = round(existing_opposite_ev, 4)
 
         try:
             equity = self._sim_equity
@@ -1060,18 +1089,19 @@ class LiveRunner:
                 return
             proposed_target = platform_min_quote
 
-        if window_id not in win_budget:
-            win_target[window_id] = proposed_target
-            win_budget[window_id] = proposed_target
+        if dir_key not in win_budget:
+            win_target[dir_key] = proposed_target
+            win_budget[dir_key] = proposed_target
             win_dir[window_id] = best_dir
-            _SIM_WIN_ENTRY_PROB[window_id] = float(best_side_prob)
-            _SIM_WIN_LAST_PROB[window_id] = float(best_side_prob)
+            _SIM_WIN_ENTRY_PROB[dir_key] = float(best_side_prob)
+            _SIM_WIN_LAST_PROB[dir_key] = float(best_side_prob)
+            _SIM_WIN_ENTRY_EV[dir_key] = float(best_ev_simple)
             kelly_total = proposed_target
         else:
-            current_target = float(win_target.get(window_id, win_budget.get(window_id, 0.0)))
-            if best_dir == win_dir.get(window_id) and proposed_target > current_target + 1e-9:
-                entry_prob = float(_SIM_WIN_ENTRY_PROB.get(window_id, best_side_prob))
-                last_prob = float(_SIM_WIN_LAST_PROB.get(window_id, entry_prob))
+            current_target = float(win_target.get(dir_key, win_budget.get(dir_key, 0.0)))
+            if proposed_target > current_target + 1e-9:
+                entry_prob = float(_SIM_WIN_ENTRY_PROB.get(dir_key, best_side_prob))
+                last_prob = float(_SIM_WIN_LAST_PROB.get(dir_key, entry_prob))
                 probability_deteriorated = best_side_prob < max(entry_prob - 0.05, last_prob - 0.03)
                 if probability_deteriorated:
                     _SIM_CURRENT["status"] = "add_blocked_probability_deteriorated"
@@ -1084,17 +1114,18 @@ class LiveRunner:
                     self._write_current_window_snapshot()
                     return
                 delta = proposed_target - current_target
-                win_target[window_id] = proposed_target
-                win_budget[window_id] = float(win_budget.get(window_id, 0.0)) + delta
-                filled_set.discard(window_id)
+                win_target[dir_key] = proposed_target
+                win_budget[dir_key] = float(win_budget.get(dir_key, 0.0)) + delta
+                filled_set.discard(dir_key)
                 _SIM_CURRENT["target_upgraded"] = True
                 _SIM_CURRENT["target_upgrade_delta"] = round(delta, 2)
-            _SIM_WIN_LAST_PROB[window_id] = float(best_side_prob)
-            kelly_total = float(win_target.get(window_id, proposed_target))
+            _SIM_WIN_LAST_PROB[dir_key] = float(best_side_prob)
+            _SIM_WIN_ENTRY_EV[dir_key] = max(float(_SIM_WIN_ENTRY_EV.get(dir_key, 0.0) or 0.0), float(best_ev_simple))
+            kelly_total = float(win_target.get(dir_key, proposed_target))
 
-        remaining = win_budget.get(window_id, 0)
+        remaining = win_budget.get(dir_key, 0)
         if remaining <= 0:
-            filled_set.add(window_id)
+            filled_set.add(dir_key)
             _SIM_CURRENT["status"] = "filled"; self._write_current_window_snapshot(); return
 
         single = min(remaining, max(depth_cap, 2.50))
@@ -1103,16 +1134,16 @@ class LiveRunner:
         elif single < 2.50:
             single = 2.50
 
-        win_budget[window_id] = remaining - single
+        win_budget[dir_key] = remaining - single
         _record_decision(single, "filled", "FILLED", {
-            "budget_remain": round(win_budget.get(window_id, 0), 2),
+            "budget_remain": round(win_budget.get(dir_key, 0), 2),
             "budget_total": round(kelly_total, 2),
             "target_upgraded": bool(_SIM_CURRENT.get("target_upgraded", False)),
             "target_upgrade_count": 1 if bool(_SIM_CURRENT.get("target_upgraded", False)) else 0,
         })
 
-        if win_budget[window_id] <= 0:
-            filled_set.add(window_id)
+        if win_budget[dir_key] <= 0:
+            filled_set.add(dir_key)
             _SIM_CURRENT["status"] = "FILLED"
         else:
             _SIM_CURRENT["status"] = f"part_fill"
@@ -1122,7 +1153,7 @@ class LiveRunner:
         _SIM_CURRENT["fill_ev"] = round(best_ev_simple, 4)
         _SIM_CURRENT["fill_edge"] = round(best_edge, 4)
         _SIM_CURRENT["fill_kelly_raw"] = round(best_kelly_raw, 4)
-        _SIM_CURRENT["budget_remain"] = round(win_budget.get(window_id, 0), 2)
+        _SIM_CURRENT["budget_remain"] = round(win_budget.get(dir_key, 0), 2)
         _SIM_CURRENT["budget_total"] = round(kelly_total, 2)
         self._write_current_window_snapshot()
 
@@ -1207,7 +1238,8 @@ class LiveRunner:
         max_attempt_quote: Optional[float] = None,
         decision_meta: Optional[dict[str, Any]] = None,
     ) -> Optional[OrderTicket]:
-        state = _REAL_WINDOW_ORDERS.get(window_id)
+        order_key = f"{window_id}:{best_dir}"
+        state = _REAL_WINDOW_ORDERS.get(order_key)
         min_shares = float(POLYMARKET_PLATFORM.min_limit_order_shares)
         min_quote = float(POLYMARKET_PLATFORM.min_order_quote_usdc)
         latest_target_shares = float(target_quote) / max(float(limit_price), 0.01)
@@ -1243,7 +1275,7 @@ class LiveRunner:
                 "add_blocked": False,
                 "decision_meta": dict(decision_meta or {}),
             }
-            _REAL_WINDOW_ORDERS[window_id] = state
+            _REAL_WINDOW_ORDERS[order_key] = state
         else:
             filled_shares = float(state.get("filled_shares", 0.0))
             if decision_meta:
