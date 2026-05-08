@@ -1906,7 +1906,7 @@ class LiveRunner:
             return result(ok, "allowed_phase2_trend" if ok else "phase2_trend_quality_not_met", "phase2_trend_price_lt_0_8", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask_exclusive": 0.80, "friction_adjusted_ev": round(friction_adjusted_ev, 6), "friction_multiplier": 1.005})
 
         req_prob, req_edge, req_ev, req_kelly = 0.60, -1.0, 0.0, 0.0
-        friction_adjusted_ev = self._calc_ev(p_side, ask * 1.005)
+        friction_adjusted_ev = cls._calc_ev(p_side, ask * 1.005)
         if phase >= 4:
             ok = p_side >= req_prob and ask < 0.80 and friction_adjusted_ev > req_ev and bool(p_rising_8s)
             return result(ok, "allowed_phase4_rising_trend" if ok else "phase4_trend_shadow_only", "phase4_rising_confirm", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask_exclusive": 0.80, "p_rising_required_sec": 8, "friction_adjusted_ev": round(friction_adjusted_ev, 6), "friction_multiplier": 1.005})
