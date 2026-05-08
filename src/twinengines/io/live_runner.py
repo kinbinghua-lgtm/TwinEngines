@@ -872,8 +872,31 @@ class LiveRunner:
         })
         
         if best_side_prob < min_side_prob:
-            _SIM_CURRENT["status"] = f"p<{min_side_prob:.2f}"
-            _record_decision(0, "rejected", f"p<{min_side_prob:.2f}")
+            low_prob_value_candidate = (
+                phase <= 1
+                and not has_opposite_position
+                and 0.35 <= float(best_side_prob) < float(min_side_prob)
+                and float(ask) <= 0.35
+                and float(best_edge) >= 0.15
+                and float(best_ev_simple) >= 0.45
+                and float(best_kelly_raw) >= 0.20
+            )
+            if low_prob_value_candidate:
+                _SIM_CURRENT["low_prob_value_candidate"] = True
+                _SIM_CURRENT["status"] = "low_prob_value_shadow_only"
+                _record_decision(0, "rejected", "low_prob_value_shadow_only", {
+                    "low_prob_value_candidate": True,
+                    "shadow_only": True,
+                    "low_prob_min_prob": 0.35,
+                    "low_prob_max_prob": round(float(min_side_prob), 4),
+                    "low_prob_max_ask": 0.35,
+                    "low_prob_min_edge": 0.15,
+                    "low_prob_min_ev": 0.45,
+                    "low_prob_min_kelly_raw": 0.20,
+                })
+            else:
+                _SIM_CURRENT["status"] = f"p<{min_side_prob:.2f}"
+                _record_decision(0, "rejected", f"p<{min_side_prob:.2f}")
             self._write_current_window_snapshot()
             return
         if best_edge < req_edge:
@@ -996,7 +1019,7 @@ class LiveRunner:
                             _SIM_CURRENT["real_limit_px"] = round(float(limit_px), 4)
                             if real_kelly_total < platform_min_quote:
                                 boost_key = f"{window_id}:{best_dir}"
-                                one_time_boost_available = boost_key not in self._platform_min_boost_used and not has_opposite_position
+                                one_time_boost_available = boost_key not in self._platform_min_boost_used
                                 hard_pre_cap = min(
                                     runtime_window_cap_abs if runtime_window_cap_abs > 0 else float("inf"),
                                     float(real_equity or 0.0) * effective_max_stake_ratio if effective_max_stake_ratio > 0 else float("inf"),
