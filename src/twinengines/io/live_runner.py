@@ -899,6 +899,20 @@ class LiveRunner:
         _SIM_CURRENT["intent_allowed"] = bool(lifecycle["allowed"])
         _SIM_CURRENT["intent_reason"] = lifecycle["reason"]
         _SIM_CURRENT["lifecycle_phase_policy"] = lifecycle["phase_policy"]
+        for _stale_lifecycle_key in (
+            "value_max_ask",
+            "value_max_ask_exclusive",
+            "trend_max_ask",
+            "trend_max_ask_exclusive",
+            "add_max_ask_exclusive",
+            "high_price_min_ask",
+            "p_rising_required_sec",
+            "p_rising_5s",
+            "p_rising_8s",
+            "friction_adjusted_ev",
+            "friction_multiplier",
+        ):
+            _SIM_CURRENT.pop(_stale_lifecycle_key, None)
         _SIM_CURRENT.update(dict(lifecycle.get("meta") or {}))
         _SIM_CURRENT["is_hedge"] = trade_intent == "HEDGE"
         _SIM_CURRENT["is_add"] = trade_intent == "ADD"
