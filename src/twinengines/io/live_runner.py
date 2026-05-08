@@ -766,6 +766,24 @@ class LiveRunner:
             except Exception:
                 startup_observe_only = False
 
+        stale_decision_keys = (
+            "best_dir", "best_side_prob", "best_edge", "best_ev", "best_ev_simple", "best_kelly_raw",
+            "trade_intent", "intent_allowed", "intent_reason", "lifecycle_phase_policy",
+            "req_prob", "req_edge", "req_ev", "req_kelly_raw",
+            "is_hedge", "is_add", "is_value_entry", "is_trend_entry",
+            "value_max_ask", "value_max_ask_exclusive", "trend_max_ask", "trend_max_ask_exclusive",
+            "add_max_ask_exclusive", "high_price_min_ask", "p_rising_required_sec", "p_rising_5s", "p_rising_8s",
+            "friction_adjusted_ev", "friction_multiplier",
+            "real_status", "real_decision_stage", "real_block_reason", "real_skip_reason",
+            "real_target_quote", "real_attempt_quote", "real_kelly_raw_quote", "real_platform_min_quote",
+            "real_min_5_shares_quote", "real_min_order_quote", "real_limit_px", "real_window_cap",
+            "real_min_abs_boost_available", "real_min_abs_boost_used", "real_platform_min_boost_available",
+            "real_platform_min_boost_used", "real_min_share_exception", "real_min_share_exception_reason",
+            "status", "fill_amt", "fill_ask", "fill_ev", "fill_edge", "fill_kelly_raw",
+        )
+        for _stale_key in stale_decision_keys:
+            _SIM_CURRENT.pop(_stale_key, None)
+
         # 基础状态更新
         _SIM_CURRENT.update({"window_id": window_id, "prefix": trig, "T": round(t_rem, 0),
                              "p_up": round(p_up, 3), "p_down": round(p_down, 3),
@@ -774,6 +792,7 @@ class LiveRunner:
                              "phase": phase, "elapsed_sec": round(elapsed_sec, 0),
                              "startup_observe_only": bool(startup_observe_only),
                              "startup_missed_sec": round(startup_missed_sec, 1),
+                             "decision_pending": True,
                              "min_side_prob": min_side_prob, "min_edge": min_edge,
                              "min_ev": min_ev, "min_kelly_raw": min_kelly_raw})
         try:
@@ -899,6 +918,7 @@ class LiveRunner:
         _SIM_CURRENT["intent_allowed"] = bool(lifecycle["allowed"])
         _SIM_CURRENT["intent_reason"] = lifecycle["reason"]
         _SIM_CURRENT["lifecycle_phase_policy"] = lifecycle["phase_policy"]
+        _SIM_CURRENT["decision_pending"] = False
         for _stale_lifecycle_key in (
             "value_max_ask",
             "value_max_ask_exclusive",
