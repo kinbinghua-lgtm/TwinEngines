@@ -53,6 +53,7 @@ class PositionExitGuardCfg:
     strong_prob_gap_exit: float = 0.12
     catastrophic_adverse_prob_exit: float = 0.78
     held_prob_floor_exit: float = 0.35
+    held_prob_decay_exit_floor: float = 0.52
     exit_retry_cooldown_sec: float = 2.0
     max_exit_attempts_per_position: int = 8
     early_entry_reversal_exit_sec: float = 45.0
@@ -281,7 +282,7 @@ class PositionExitGuard:
             reason = "catastrophic_probability_reversal"
         elif adverse_prob >= strong_adverse_prob_exit and prob_gap >= float(self.cfg.strong_prob_gap_exit):
             reason = "direction_probability_reversed"
-        elif previous_held_max and previous_held_max > 0 and held_prob <= previous_held_max - float(self.cfg.held_prob_drawdown_exit) and held_prob < 0.62:
+        elif previous_held_max and previous_held_max > 0 and held_prob <= previous_held_max - float(self.cfg.held_prob_drawdown_exit) and held_prob < float(self.cfg.held_prob_decay_exit_floor):
             reason = "held_probability_decay"
         if reason is None:
             return
