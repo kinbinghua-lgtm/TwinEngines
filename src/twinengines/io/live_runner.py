@@ -1022,26 +1022,37 @@ class LiveRunner:
                             if real_kelly_total < platform_min_quote:
                                 boost_key = f"{window_id}:{best_dir}"
                                 one_time_boost_available = boost_key not in self._platform_min_boost_used
-                                hard_pre_cap = min(
-                                    runtime_window_cap_abs if runtime_window_cap_abs > 0 else float("inf"),
-                                    float(real_equity or 0.0) * effective_max_stake_ratio if effective_max_stake_ratio > 0 else float("inf"),
-                                )
+                                window_abs_cap = runtime_window_cap_abs if runtime_window_cap_abs > 0 else float("inf")
+                                window_ratio_cap = float(real_equity or 0.0) * effective_max_stake_ratio if effective_max_stake_ratio > 0 else float("inf")
+                                ratio_limited_cap = min(window_abs_cap, window_ratio_cap)
+                                high_prob_min_share_exception = float(best_side_prob) >= 0.80 and float(limit_px) < 0.90
+                                min_share_exception = bool(has_opposite_position or high_prob_min_share_exception)
+                                boost_cap = window_abs_cap if min_share_exception else ratio_limited_cap
                                 _SIM_CURRENT["real_platform_min_boost_available"] = bool(one_time_boost_available)
-                                _SIM_CURRENT["real_pre_window_cap"] = round(float(hard_pre_cap), 4) if math.isfinite(float(hard_pre_cap)) else None
-                                if hard_pre_cap >= platform_min_quote and one_time_boost_available:
+                                _SIM_CURRENT["real_pre_window_cap"] = round(float(boost_cap), 4) if math.isfinite(float(boost_cap)) else None
+                                _SIM_CURRENT["real_ratio_limited_cap"] = round(float(ratio_limited_cap), 4) if math.isfinite(float(ratio_limited_cap)) else None
+                                _SIM_CURRENT["real_min_share_exception"] = bool(min_share_exception)
+                                _SIM_CURRENT["real_min_share_exception_reason"] = "hedge" if has_opposite_position else "high_prob_price" if high_prob_min_share_exception else None
+                                if boost_cap >= platform_min_quote and one_time_boost_available:
                                     real_kelly_total = platform_min_quote
                                     self._platform_min_boost_used.add(boost_key)
                                     _SIM_CURRENT["real_platform_min_boost_used"] = True
-                                elif float(real_equity or 0.0) * effective_max_stake_ratio < platform_min_quote:
+                                elif boost_cap < platform_min_quote:
                                     _SIM_CURRENT["real_status"] = "real_platform_min_not_met"
-                                    _SIM_CURRENT["real_block_reason"] = "platform_min_above_cap"
+                                    _SIM_CURRENT["real_block_reason"] = "platform_min_above_allowed_cap"
                                     real_kelly_total = 0.0
                                 else:
                                     real_kelly_total = platform_min_quote
                             if real_kelly_total >= platform_min_quote:
                                 window_abs_cap = runtime_window_cap_abs if runtime_window_cap_abs > 0 else float("inf")
                                 window_ratio_cap = float(real_equity) * effective_max_stake_ratio if effective_max_stake_ratio > 0 else float("inf")
+                                high_prob_min_share_exception = float(best_side_prob) >= 0.80 and float(limit_px) < 0.90
+                                min_share_exception = bool(has_opposite_position or high_prob_min_share_exception)
                                 hard_window_cap = min(window_abs_cap, window_ratio_cap)
+                                if min_share_exception and float(real_kelly_total) <= platform_min_quote + 1e-9:
+                                    hard_window_cap = window_abs_cap
+                                    _SIM_CURRENT["real_min_share_exception"] = True
+                                    _SIM_CURRENT["real_min_share_exception_reason"] = "hedge" if has_opposite_position else "high_prob_price"
                                 if hard_window_cap < platform_min_quote:
                                     _SIM_CURRENT["real_status"] = "real_window_cap_below_platform_min"
                                     _SIM_CURRENT["real_decision_stage"] = "window_cap_check"
@@ -1085,6 +1096,8 @@ class LiveRunner:
                                         "attempt_quote": round(float(real_single), 4),
                                         "effective_max_stake_ratio": round(effective_max_stake_ratio, 6),
                                         "real_window_cap": round(float(_SIM_CURRENT.get("real_window_cap") or 0.0), 4),
+                                        "real_min_share_exception": bool(_SIM_CURRENT.get("real_min_share_exception", False)),
+                                        "real_min_share_exception_reason": _SIM_CURRENT.get("real_min_share_exception_reason"),
                                     },
                                 )
                                 _SIM_CURRENT["real_status"] = "real_fok_evaluated"
