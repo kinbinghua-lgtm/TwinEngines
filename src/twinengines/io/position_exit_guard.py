@@ -43,6 +43,7 @@ class ExitPosition:
 @dataclass
 class PositionExitGuardCfg:
     enabled: bool = True
+    active_exit_enabled: bool = False
     check_interval_sec: float = 1.0
     min_exit_quote_usdc: float = 1.0
     exit_retry_cooldown_sec: float = 2.0
@@ -222,6 +223,10 @@ class PositionExitGuard:
             self._audit("exit_guard_closed", pos, {"reason": pos.last_reason})
             return
         if pos.exit_intent_reason:
+            if not bool(self.cfg.active_exit_enabled):
+                pos.last_reason = "active_exit_disabled_hold_for_hedge"
+                self._audit("exit_guard_exit_suppressed", pos, {"reason": pos.exit_intent_reason})
+                return
             self._exit_5share_loop(pos, reason=pos.exit_intent_reason)
             if pos.closed:
                 return
@@ -249,6 +254,8 @@ class PositionExitGuard:
                 pos.last_reason = reason
                 self._audit("exit_guard_unified_exit", pos, {
                     "reason": reason,
+                    "active_exit_enabled": bool(self.cfg.active_exit_enabled),
+                    "exit_suppressed": not bool(self.cfg.active_exit_enabled),
                     "seconds_left": round(float(seconds_left), 2),
                     "held_prob": round(float(held_prob), 4),
                     "adverse_prob": round(float(adverse_prob), 4),
@@ -261,6 +268,10 @@ class PositionExitGuard:
                     "price_ok": bool(price_ok),
                     "time_ok": bool(time_ok),
                 })
+                if not bool(self.cfg.active_exit_enabled):
+                    pos.last_reason = "active_exit_disabled_hold_for_hedge"
+                    self._audit("exit_guard_exit_suppressed", pos, {"reason": reason})
+                    return
                 self._exit_5share_loop(pos, reason=reason)
                 return
         pos.last_reason = "hold_unified_exit_conditions"
@@ -281,6 +292,10 @@ class PositionExitGuard:
         return
 
     def _exit_5share_loop(self, pos: ExitPosition, *, reason: str) -> None:
+        if not bool(self.cfg.active_exit_enabled):
+            pos.last_reason = "active_exit_disabled_hold_for_hedge"
+            self._audit("exit_guard_exit_suppressed", pos, {"reason": reason})
+            return
         min_shares = float(POLYMARKET_PLATFORM.min_limit_order_shares)
         now_ms = int(time.time() * 1000)
         cooldown_ms = int(max(0.2, float(self.cfg.exit_retry_cooldown_sec)) * 1000)

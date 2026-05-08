@@ -840,118 +840,66 @@ class LiveRunner:
         opposite_key = f"{window_id}:{opposite_dir}"
         opposite_real = _REAL_WINDOW_ORDERS.get(opposite_key) or {}
         has_opposite_position = opposite_key in win_target or float(opposite_real.get("filled_shares", 0.0) or 0.0) > 1e-9
-        is_floor_price_entry = ask < 0.10
-        if is_floor_price_entry:
-            floor_min_prob = 0.62
-            if best_side_prob < floor_min_prob:
-                _SIM_CURRENT["status"] = f"floor_p<{floor_min_prob:.2f}"
-                _SIM_CURRENT["floor_price_entry"] = True
-                _SIM_CURRENT["floor_min_prob"] = floor_min_prob
-                _record_decision(0, "rejected", f"floor_p<{floor_min_prob:.2f}", {"floor_price_entry": True, "floor_min_prob": floor_min_prob})
-                self._write_current_window_snapshot()
-                return
-        
-        # 动态阈值：高概率放宽 EV 要求，低概率提高 EV 要求
-        req_edge, req_ev, req_kelly_raw = self._direction_min_thresholds(best_side_prob, phase=phase, elapsed_sec=elapsed_sec, has_position=dir_key in win_target)
-        
+        same_real = _REAL_WINDOW_ORDERS.get(dir_key) or {}
+        has_same_position = dir_key in win_target or float(same_real.get("filled_shares", 0.0) or 0.0) > 1e-9
+
+        # 5-minute lifecycle strategy: classify intent first, then apply phase-aware policy.
+        lifecycle = self._evaluate_lifecycle_intent_gate(
+            phase=phase,
+            p_side=best_side_prob,
+            ask=ask,
+            edge=best_edge,
+            ev=best_ev_simple,
+            kelly_raw=best_kelly_raw,
+            has_same_position=has_same_position,
+            has_opposite_position=has_opposite_position,
+        )
+        trade_intent = str(lifecycle["trade_intent"])
+        req_edge = float(lifecycle["req_edge"])
+        req_ev = float(lifecycle["req_ev"])
+        req_kelly_raw = float(lifecycle["req_kelly_raw"])
+        req_prob = float(lifecycle["req_prob"])
+
         _SIM_CURRENT["best_dir"] = best_dir
         _SIM_CURRENT["best_side_prob"] = round(best_side_prob, 4)
         _SIM_CURRENT["best_edge"] = round(best_edge, 4)
         _SIM_CURRENT["best_ev"] = round(best_ev_simple, 4)
         _SIM_CURRENT["best_ev_simple"] = round(best_ev_simple, 4)
         _SIM_CURRENT["best_kelly_raw"] = round(best_kelly_raw, 4)
+        _SIM_CURRENT["req_prob"] = round(req_prob, 4)
         _SIM_CURRENT["req_edge"] = round(req_edge, 4)
         _SIM_CURRENT["req_ev"] = round(req_ev, 4)
         _SIM_CURRENT["req_kelly_raw"] = round(req_kelly_raw, 4)
+        _SIM_CURRENT["trade_intent"] = trade_intent
+        _SIM_CURRENT["intent_allowed"] = bool(lifecycle["allowed"])
+        _SIM_CURRENT["intent_reason"] = lifecycle["reason"]
+        _SIM_CURRENT["lifecycle_phase_policy"] = lifecycle["phase_policy"]
+        _SIM_CURRENT["is_hedge"] = trade_intent == "HEDGE"
+        _SIM_CURRENT["is_add"] = trade_intent == "ADD"
+        _SIM_CURRENT["is_value_entry"] = trade_intent == "ENTRY_VALUE"
+        _SIM_CURRENT["is_trend_entry"] = trade_intent == "ENTRY_TREND"
         signal_meta.update({
+            "req_prob": round(req_prob, 4),
             "req_edge": round(req_edge, 4),
             "req_ev": round(req_ev, 4),
             "req_kelly_raw": round(req_kelly_raw, 4),
             "best_edge": round(best_edge, 4),
             "best_kelly_raw": round(best_kelly_raw, 4),
+            "trade_intent": trade_intent,
+            "intent_allowed": bool(lifecycle["allowed"]),
+            "intent_reason": lifecycle["reason"],
+            "lifecycle_phase_policy": lifecycle["phase_policy"],
+            "is_hedge": trade_intent == "HEDGE",
+            "is_add": trade_intent == "ADD",
+            "is_value_entry": trade_intent == "ENTRY_VALUE",
+            "is_trend_entry": trade_intent == "ENTRY_TREND",
+            **dict(lifecycle.get("meta") or {}),
         })
-        
-        if best_side_prob < min_side_prob:
-            low_prob_value_candidate = (
-                phase <= 1
-                and not has_opposite_position
-                and 0.35 <= float(best_side_prob) < float(min_side_prob)
-                and float(ask) <= 0.35
-                and float(best_edge) >= 0.15
-                and float(best_ev_simple) >= 0.45
-                and float(best_kelly_raw) >= 0.20
-            )
-            if low_prob_value_candidate:
-                _SIM_CURRENT["low_prob_value_candidate"] = True
-                _SIM_CURRENT["status"] = "low_prob_value_shadow_only"
-                _record_decision(0, "rejected", "low_prob_value_shadow_only", {
-                    "low_prob_value_candidate": True,
-                    "shadow_only": True,
-                    "low_prob_min_prob": 0.35,
-                    "low_prob_max_prob": round(float(min_side_prob), 4),
-                    "low_prob_max_ask": 0.35,
-                    "low_prob_min_edge": 0.15,
-                    "low_prob_min_ev": 0.45,
-                    "low_prob_min_kelly_raw": 0.20,
-                })
-            else:
-                _SIM_CURRENT["status"] = f"p<{min_side_prob:.2f}"
-                _record_decision(0, "rejected", f"p<{min_side_prob:.2f}")
-            self._write_current_window_snapshot()
-            return
-        if best_edge < req_edge:
-            _SIM_CURRENT["status"] = f"edge<{req_edge:.3f}"
-            _record_decision(0, "rejected", f"edge<{req_edge:.3f}")
-            self._write_current_window_snapshot()
-            return
-        if best_ev_simple < req_ev:
-            _SIM_CURRENT["status"] = f"EV<{req_ev:.2f}"
-            _record_decision(0, "rejected", f"EV<{req_ev:.2f}")
-            self._write_current_window_snapshot()
-            return
-        if best_kelly_raw < req_kelly_raw:
-            _SIM_CURRENT["status"] = f"KellyRaw<{req_kelly_raw:.2f}"
-            _record_decision(0, "rejected", f"KellyRaw<{req_kelly_raw:.2f}")
-            self._write_current_window_snapshot()
-            return
 
-        same_real = _REAL_WINDOW_ORDERS.get(dir_key) or {}
-        has_same_position = dir_key in win_target or float(same_real.get("filled_shares", 0.0) or 0.0) > 1e-9
-        phase3_high_price_low_ev_guard = (
-            phase >= 3
-            and float(ask) >= 0.70
-            and float(best_ev_simple) < 0.20
-            and not has_same_position
-            and not has_opposite_position
-        )
-        if phase3_high_price_low_ev_guard:
-            _SIM_CURRENT["status"] = "phase3_high_price_low_ev_shadow_only"
-            _SIM_CURRENT["phase3_guard"] = "high_price_low_ev_first_entry"
-            _record_decision(0, "rejected", "phase3_high_price_low_ev_shadow_only", {
-                "phase3_guard": "high_price_low_ev_first_entry",
-                "shadow_only": True,
-                "phase3_high_price_guard_min_ask": 0.70,
-                "phase3_high_price_guard_min_ev": 0.20,
-            })
-            self._write_current_window_snapshot()
-            return
-
-        phase3_same_direction_add_guard = (
-            phase >= 3
-            and has_same_position
-            and not has_opposite_position
-            and (float(best_side_prob) < 0.80 or float(best_edge) < 0.20)
-        )
-        if phase3_same_direction_add_guard:
-            _SIM_CURRENT["status"] = "phase3_add_shadow_only"
-            _SIM_CURRENT["phase3_guard"] = "same_direction_add_requires_p80_edge20"
-            _record_decision(0, "rejected", "phase3_add_shadow_only", {
-                "phase3_guard": "same_direction_add_requires_p80_edge20",
-                "shadow_only": True,
-                "phase3_add_min_prob": 0.80,
-                "phase3_add_min_edge": 0.20,
-                "has_same_position": True,
-            })
+        if not bool(lifecycle["allowed"]):
+            reason = str(lifecycle["reason"])
+            _SIM_CURRENT["status"] = reason
+            _record_decision(0, "rejected", reason, dict(lifecycle.get("meta") or {}))
             self._write_current_window_snapshot()
             return
 
@@ -963,9 +911,16 @@ class LiveRunner:
             phase=phase,
             has_position=dir_key in win_target,
         )
-        if is_floor_price_entry:
-            max_stake_ratio = min(max_stake_ratio, 0.06)
-            sizing_fraction = min(sizing_fraction, 0.12)
+        sizing_fraction, max_stake_ratio, sizing_tier = self._apply_lifecycle_sizing_profile(
+            sizing_fraction=sizing_fraction,
+            max_stake_ratio=max_stake_ratio,
+            sizing_tier=sizing_tier,
+            trade_intent=trade_intent,
+            phase=phase,
+        )
+        if trade_intent == "ENTRY_VALUE":
+            _SIM_CURRENT["floor_price_entry"] = bool(ask < 0.10)
+        if trade_intent == "ENTRY_VALUE" and ask < 0.10:
             sizing_tier = f"floor_lottery_{sizing_tier}"
         _SIM_CURRENT["sizing_fraction"] = round(sizing_fraction, 4)
         runtime_window_cap_abs = float(getattr(self.cfg.runtime, "real_max_window_risk_usdc", 5.0) or 0.0)
@@ -975,14 +930,14 @@ class LiveRunner:
         _SIM_CURRENT["effective_max_stake_ratio"] = round(effective_max_stake_ratio, 4)
         _SIM_CURRENT["real_max_window_risk_usdc"] = round(runtime_window_cap_abs, 2) if runtime_window_cap_abs > 0 else None
         _SIM_CURRENT["sizing_tier"] = sizing_tier
-        _SIM_CURRENT["floor_price_entry"] = bool(is_floor_price_entry)
+        _SIM_CURRENT["floor_price_entry"] = bool(trade_intent == "ENTRY_VALUE" and ask < 0.10)
         signal_meta.update({
             "sizing_fraction": round(sizing_fraction, 4),
             "max_stake_ratio": round(max_stake_ratio, 4),
             "effective_max_stake_ratio": round(effective_max_stake_ratio, 4),
             "real_max_window_risk_usdc": round(runtime_window_cap_abs, 2) if runtime_window_cap_abs > 0 else None,
             "sizing_tier": sizing_tier,
-            "floor_price_entry": bool(is_floor_price_entry),
+            "floor_price_entry": bool(trade_intent == "ENTRY_VALUE" and ask < 0.10),
         })
         if self.exit_guard is not None and is_real_mode and window_id:
             try:
@@ -1066,8 +1021,12 @@ class LiveRunner:
                                 window_abs_cap = runtime_window_cap_abs if runtime_window_cap_abs > 0 else float("inf")
                                 window_ratio_cap = float(real_equity or 0.0) * effective_max_stake_ratio if effective_max_stake_ratio > 0 else float("inf")
                                 ratio_limited_cap = min(window_abs_cap, window_ratio_cap)
-                                high_prob_min_share_exception = float(best_side_prob) >= 0.80 and float(limit_px) < 0.90
-                                min_share_exception = bool(has_opposite_position or high_prob_min_share_exception)
+                                high_prob_min_share_exception = (
+                                    trade_intent == "ENTRY_TREND"
+                                    and float(best_side_prob) >= 0.80
+                                    and float(limit_px) < 0.90
+                                )
+                                min_share_exception = bool(trade_intent == "HEDGE" or high_prob_min_share_exception)
                                 boost_cap = window_abs_cap if min_share_exception else ratio_limited_cap
                                 _SIM_CURRENT["real_platform_min_boost_available"] = bool(one_time_boost_available)
                                 _SIM_CURRENT["real_pre_window_cap"] = round(float(boost_cap), 4) if math.isfinite(float(boost_cap)) else None
@@ -1087,8 +1046,12 @@ class LiveRunner:
                             if real_kelly_total >= platform_min_quote:
                                 window_abs_cap = runtime_window_cap_abs if runtime_window_cap_abs > 0 else float("inf")
                                 window_ratio_cap = float(real_equity) * effective_max_stake_ratio if effective_max_stake_ratio > 0 else float("inf")
-                                high_prob_min_share_exception = float(best_side_prob) >= 0.80 and float(limit_px) < 0.90
-                                min_share_exception = bool(has_opposite_position or high_prob_min_share_exception)
+                                high_prob_min_share_exception = (
+                                    trade_intent == "ENTRY_TREND"
+                                    and float(best_side_prob) >= 0.80
+                                    and float(limit_px) < 0.90
+                                )
+                                min_share_exception = bool(trade_intent == "HEDGE" or high_prob_min_share_exception)
                                 hard_window_cap = min(window_abs_cap, window_ratio_cap)
                                 if min_share_exception and float(real_kelly_total) <= platform_min_quote + 1e-9:
                                     hard_window_cap = window_abs_cap
@@ -1139,6 +1102,8 @@ class LiveRunner:
                                         "real_window_cap": round(float(_SIM_CURRENT.get("real_window_cap") or 0.0), 4),
                                         "real_min_share_exception": bool(_SIM_CURRENT.get("real_min_share_exception", False)),
                                         "real_min_share_exception_reason": _SIM_CURRENT.get("real_min_share_exception_reason"),
+                                        "trade_intent": trade_intent,
+                                        "intent_reason": lifecycle["reason"],
                                     },
                                 )
                                 _SIM_CURRENT["real_status"] = "real_fok_evaluated"
@@ -1630,7 +1595,17 @@ class LiveRunner:
                 "d_abs_pct": round(d_abs, 4),
                 "ts_ms": int(__import__("time").time() * 1000),
             }
-            rec.update({k: v for k, v in meta.items() if k not in rec and k.startswith("real_")})
+            rec.update({k: v for k, v in meta.items() if k not in rec and (k.startswith("real_") or k in {
+                "trade_intent",
+                "intent_allowed",
+                "intent_reason",
+                "lifecycle_phase_policy",
+                "is_hedge",
+                "is_add",
+                "is_value_entry",
+                "is_trend_entry",
+                "req_prob",
+            })})
             with open(self._runtime_path("logs", "shadow_orders.jsonl"), "ab+") as _f:
                 _f.seek(0, 2); pos = _f.tell()
                 if pos > 0:
@@ -1639,6 +1614,155 @@ class LiveRunner:
                 _f.write((_j.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8"))
         except Exception as e:
             logger.debug("write_sim_record failed: %s", e)
+
+    @staticmethod
+    def _classify_lifecycle_trade_intent(
+        *,
+        phase: int,
+        p_side: float,
+        ask: float,
+        edge: float,
+        ev: float,
+        kelly_raw: float,
+        has_same_position: bool,
+        has_opposite_position: bool,
+    ) -> str:
+        if has_opposite_position:
+            return "HEDGE"
+        if has_same_position:
+            return "ADD"
+        if ask <= 0.35 and edge >= 0.12 and ev >= 0.30 and kelly_raw >= 0.12:
+            if phase <= 0 and p_side >= 0.45:
+                return "ENTRY_VALUE"
+            if phase == 1 and p_side >= 0.55:
+                return "ENTRY_VALUE"
+        if phase >= 3 and ask <= 0.25 and p_side >= 0.45 and edge >= 0.20 and ev >= 0.80 and kelly_raw >= 0.15:
+            return "ENTRY_VALUE"
+        return "ENTRY_TREND"
+
+    @classmethod
+    def _evaluate_lifecycle_intent_gate(
+        cls,
+        *,
+        phase: int,
+        p_side: float,
+        ask: float,
+        edge: float,
+        ev: float,
+        kelly_raw: float,
+        has_same_position: bool,
+        has_opposite_position: bool,
+    ) -> dict[str, Any]:
+        intent = cls._classify_lifecycle_trade_intent(
+            phase=phase,
+            p_side=p_side,
+            ask=ask,
+            edge=edge,
+            ev=ev,
+            kelly_raw=kelly_raw,
+            has_same_position=has_same_position,
+            has_opposite_position=has_opposite_position,
+        )
+        meta: dict[str, Any] = {
+            "lifecycle_phase": phase,
+            "trade_intent": intent,
+            "has_same_position": bool(has_same_position),
+            "has_opposite_position": bool(has_opposite_position),
+        }
+
+        def result(allowed: bool, reason: str, policy: str, req_prob: float, req_edge: float, req_ev: float, req_kelly: float, extra: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+            merged = dict(meta)
+            if extra:
+                merged.update(extra)
+            return {
+                "allowed": allowed,
+                "trade_intent": intent,
+                "reason": reason,
+                "phase_policy": policy,
+                "req_prob": req_prob,
+                "req_edge": req_edge,
+                "req_ev": req_ev,
+                "req_kelly_raw": req_kelly,
+                "meta": merged,
+            }
+
+        if intent == "HEDGE":
+            if phase <= 1:
+                req_prob, req_edge, req_ev, req_kelly = 0.62, 0.055, 0.08, 0.07
+            elif phase == 2:
+                req_prob, req_edge, req_ev, req_kelly = 0.68, 0.055, 0.08, 0.07
+            else:
+                req_prob, req_edge, req_ev, req_kelly = 0.70, 0.06, 0.08, 0.07
+            ok = p_side >= req_prob and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+            return result(ok, "allowed_hedge" if ok else "hedge_quality_not_met", "hedge_priority", req_prob, req_edge, req_ev, req_kelly)
+
+        if intent == "ADD":
+            if phase >= 3:
+                req_prob, req_edge, req_ev, req_kelly = 0.80, 0.20, 0.25, 0.12
+                ok = p_side >= req_prob and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly and ask <= 0.60
+                return result(ok, "allowed_phase3_strict_add" if ok else "phase3_add_shadow_only", "phase3_add_strict", req_prob, req_edge, req_ev, req_kelly, {"phase3_add_max_ask": 0.60})
+            if phase == 2:
+                req_prob, req_edge, req_ev, req_kelly = 0.80, 0.12, 0.15, 0.10
+                ok = p_side >= req_prob and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+                return result(ok, "allowed_phase2_add" if ok else "phase2_add_quality_not_met", "phase2_add_strict", req_prob, req_edge, req_ev, req_kelly)
+            return result(False, "add_not_allowed_before_phase2", "no_early_add", 0.80, 0.12, 0.15, 0.10)
+
+        if intent == "ENTRY_VALUE":
+            if phase <= 0:
+                req_prob, req_edge, req_ev, req_kelly = 0.45, 0.12, 0.35, 0.15
+                ok = p_side >= req_prob and ask <= 0.35 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+                return result(ok, "allowed_phase0_value" if ok else "phase0_value_quality_not_met", "phase0_value_probe", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.35})
+            if phase == 1:
+                req_prob, req_edge, req_ev, req_kelly = 0.55, 0.12, 0.30, 0.12
+                ok = p_side >= req_prob and ask <= 0.35 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+                return result(ok, "allowed_phase1_value" if ok else "phase1_value_quality_not_met", "phase1_value_probe", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.35})
+            if phase >= 3:
+                req_prob, req_edge, req_ev, req_kelly = 0.45, 0.20, 0.80, 0.15
+                ok = p_side >= req_prob and ask <= 0.25 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+                return result(ok, "allowed_phase3_tail_value" if ok else "phase3_tail_value_quality_not_met", "phase3_tail_value_tiny", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.25})
+            req_prob, req_edge, req_ev, req_kelly = 0.60, 0.12, 0.25, 0.10
+            ok = p_side >= req_prob and ask <= 0.40 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+            return result(ok, "allowed_phase2_value" if ok else "phase2_value_quality_not_met", "phase2_value_probe", req_prob, req_edge, req_ev, req_kelly, {"value_max_ask": 0.40})
+
+        if phase <= 0:
+            req_prob, req_edge, req_ev, req_kelly = 0.80, 0.15, 0.25, 0.18
+            ok = p_side >= req_prob and ask <= 0.60 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+            return result(ok, "allowed_phase0_exceptional_trend" if ok else "phase0_trend_shadow_only", "phase0_no_chase", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.60})
+        if phase == 1:
+            req_prob, req_edge, req_ev, req_kelly = 0.65, 0.10, 0.15, 0.12
+            ok = p_side >= req_prob and ask <= 0.65 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+            return result(ok, "allowed_phase1_confirmed_trend" if ok else "phase1_trend_shadow_only", "phase1_confirmed_trend", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.65})
+        if phase == 2:
+            if ask >= 0.75:
+                req_prob, req_edge, req_ev, req_kelly = 0.85, 0.10, 0.12, 0.10
+                ok = p_side >= req_prob and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+                return result(ok, "allowed_phase2_high_price_trend" if ok else "phase2_high_price_trend_shadow_only", "phase2_high_price_confirmed", req_prob, req_edge, req_ev, req_kelly, {"high_price_min_ask": 0.75})
+            req_prob, req_edge, req_ev, req_kelly = 0.70, 0.08, 0.10, 0.08
+            ok = p_side >= req_prob and ask <= 0.75 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+            return result(ok, "allowed_phase2_trend" if ok else "phase2_trend_quality_not_met", "phase2_main_trend", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.75})
+
+        req_prob, req_edge, req_ev, req_kelly = 0.85, 0.15, 0.20, 0.15
+        ok = p_side >= req_prob and ask <= 0.65 and edge >= req_edge and ev >= req_ev and kelly_raw >= req_kelly
+        return result(ok, "allowed_phase3_exceptional_trend" if ok else "phase3_trend_shadow_only", "phase3_no_chase", req_prob, req_edge, req_ev, req_kelly, {"trend_max_ask": 0.65})
+
+    @staticmethod
+    def _apply_lifecycle_sizing_profile(
+        *,
+        sizing_fraction: float,
+        max_stake_ratio: float,
+        sizing_tier: str,
+        trade_intent: str,
+        phase: int,
+    ) -> tuple[float, float, str]:
+        if trade_intent == "ENTRY_VALUE":
+            if phase >= 3:
+                return min(sizing_fraction, 0.08), min(max_stake_ratio, 0.04), f"tail_value_{sizing_tier}"
+            return min(sizing_fraction, 0.12), min(max_stake_ratio, 0.06), f"value_{sizing_tier}"
+        if trade_intent == "HEDGE":
+            return sizing_fraction, max_stake_ratio, f"hedge_{sizing_tier}"
+        if trade_intent == "ADD":
+            return min(sizing_fraction, 0.14), min(max_stake_ratio, 0.06), f"add_{sizing_tier}"
+        return sizing_fraction, max_stake_ratio, f"trend_{sizing_tier}"
 
     @staticmethod
     def _calc_ev(win_prob: float, ask: float) -> float:
