@@ -699,10 +699,19 @@ class LiveRunner:
 
     def _write_current_window_snapshot(self) -> None:
         try:
-            import json as _j, os as _o
+            import json as _j, os as _o, math as _m
             _o.makedirs(self._runtime_path("data_runtime"), exist_ok=True)
+            def _sanitize(obj):
+                if isinstance(obj, dict):
+                    return {k: _sanitize(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [_sanitize(v) for v in obj]
+                elif isinstance(obj, float) and (_m.isinf(obj) or _m.isnan(obj)):
+                    return None
+                else:
+                    return obj
             with open(self._runtime_path("data_runtime", "current_window.json"), "w") as _cw:
-                _cw.write(_j.dumps(_SIM_CURRENT, default=str))
+                _cw.write(_j.dumps(_sanitize(_SIM_CURRENT), default=str))
         except Exception:
             pass
 
