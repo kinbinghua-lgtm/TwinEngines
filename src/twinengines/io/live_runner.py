@@ -965,6 +965,38 @@ class LiveRunner:
             "sizing_tier": sizing_tier,
             "floor_price_entry": bool(trade_intent == "ENTRY_VALUE" and ask < 0.10),
         })
+
+        def _audit_real_decision(outcome: str, reason: str, extra: Optional[dict[str, Any]] = None) -> None:
+            if self.store is None:
+                return
+            payload = {
+                **signal_meta,
+                "window_id": window_id,
+                "direction": best_dir,
+                "outcome": outcome,
+                "reason": reason,
+                "phase": phase,
+                "elapsed_sec": round(elapsed_sec, 2),
+                "trade_intent": trade_intent,
+                "intent_reason": lifecycle["reason"],
+                "lifecycle_phase_policy": lifecycle["phase_policy"],
+                "best_side_prob": round(best_side_prob, 6),
+                "ask": round(float(ask), 6) if ask is not None else None,
+                "best_ev": round(best_ev_simple, 6),
+                "best_kelly_raw": round(best_kelly_raw, 6),
+                "real_status": _SIM_CURRENT.get("real_status"),
+                "real_decision_stage": _SIM_CURRENT.get("real_decision_stage"),
+                "real_block_reason": _SIM_CURRENT.get("real_block_reason"),
+                "real_target_quote": _SIM_CURRENT.get("real_target_quote"),
+                "real_attempt_quote": _SIM_CURRENT.get("real_attempt_quote"),
+                "real_kelly_raw_quote": _SIM_CURRENT.get("real_kelly_raw_quote"),
+                "real_platform_min_quote": _SIM_CURRENT.get("real_platform_min_quote"),
+                "real_window_cap": _SIM_CURRENT.get("real_window_cap"),
+            }
+            if extra:
+                payload.update(extra)
+            self.store.append_audit("real_decision", payload)
+
         if self.exit_guard is not None and is_real_mode and window_id:
             try:
                 self.exit_guard.observe_signal(
@@ -983,6 +1015,11 @@ class LiveRunner:
         max_price = ask * (1.0 + slippage_budget) if ask > 0 else ask
         depth_cap = min(ask_sz * max_price * 0.8, 200.0) if ask_sz > 0 and ask > 0 else 50.0
 
+        if not is_real_mode:
+            _SIM_CURRENT["real_status"] = "real_mode_disabled"
+            _SIM_CURRENT["real_decision_stage"] = "real_mode_disabled"
+            _audit_real_decision("not_submitted", "real_mode_disabled")
+
         if is_real_mode:
             try:
                 real_equity = self._fetch_real_equity_cached() if self.poly_client else None
@@ -991,6 +1028,9 @@ class LiveRunner:
                 _SIM_CURRENT["real_equity_age_ms"] = max(0, int(time.time() * 1000) - int(self._real_equity_cache_ts_ms or 0)) if self._real_equity_cache_usdc is not None else None
                 if real_equity is None:
                     _SIM_CURRENT["real_status"] = "real_equity_unavailable"
+                    _audit_real_decision("not_submitted", "real_equity_unavailable")
+                    self._write_current_window_snapshot()
+                    return
                 else:
                     if startup_observe_only:
                         _SIM_CURRENT["real_status"] = "startup_observe_only"
@@ -1004,6 +1044,7 @@ class LiveRunner:
                                 "startup_missed_sec": round(startup_missed_sec, 2),
                                 **signal_meta,
                             })
+                        _audit_real_decision("not_submitted", "startup_observe_only", {"startup_missed_sec": round(startup_missed_sec, 2)})
                         self._write_current_window_snapshot()
                         return
                     else:
@@ -1035,8 +1076,18 @@ class LiveRunner:
                         else:
                             _SIM_CURRENT["real_status"] = "real_Kelly<2.5"
                             _SIM_CURRENT["real_block_reason"] = "kelly_below_min_absolute_and_boost_unavailable_or_cap_cannot_boost"
+                            _audit_real_decision("not_submitted", "kelly_below_min_absolute_and_boost_unavailable_or_cap_cannot_boost", {
+                                "real_kelly_total": round(float(real_kelly_total), 4),
+                                "min_abs_boost_available": bool(min_abs_boost_available),
+                                "min_abs_boost_cap": _SIM_CURRENT.get("real_min_abs_boost_cap"),
+                            })
                     if real_kelly_total >= 2.50:
                         active = self.market_resolver.get_active()
+                        if not active:
+                            _SIM_CURRENT["real_status"] = "real_active_market_unavailable"
+                            _SIM_CURRENT["real_decision_stage"] = "active_market_check"
+                            _SIM_CURRENT["real_block_reason"] = "active_market_unavailable"
+                            _audit_real_decision("not_submitted", "active_market_unavailable", {"real_kelly_total": round(float(real_kelly_total), 4)})
                         if active:
                             token_id = active.token_id_yes if best_dir == "up" else active.token_id_no
                             side_label = "DIRECTION"
@@ -1077,6 +1128,11 @@ class LiveRunner:
                                 elif boost_cap < platform_min_quote:
                                     _SIM_CURRENT["real_status"] = "real_platform_min_not_met"
                                     _SIM_CURRENT["real_block_reason"] = "platform_min_above_allowed_cap"
+                                    _audit_real_decision("not_submitted", "platform_min_above_allowed_cap", {
+                                        "boost_cap": round(float(boost_cap), 4) if math.isfinite(float(boost_cap)) else None,
+                                        "platform_min_quote": round(float(platform_min_quote), 4),
+                                        "one_time_boost_available": bool(one_time_boost_available),
+                                    })
                                     real_kelly_total = 0.0
                                 else:
                                     real_kelly_total = platform_min_quote
@@ -1108,6 +1164,10 @@ class LiveRunner:
                                             "platform_min_quote": round(platform_min_quote, 4),
                                             **signal_meta,
                                         })
+                                    _audit_real_decision("not_submitted", "window_cap_below_platform_min", {
+                                        "window_cap": round(float(hard_window_cap), 4),
+                                        "platform_min_quote": round(float(platform_min_quote), 4),
+                                    })
                                     real_kelly_total = 0.0
                                 else:
                                     real_kelly_total = min(float(real_kelly_total), float(hard_window_cap))
@@ -1147,11 +1207,18 @@ class LiveRunner:
                                 _SIM_CURRENT["real_decision_stage"] = "fok_submitted"
                                 _SIM_CURRENT["real_target_quote"] = round(float(real_kelly_total), 2)
                                 _SIM_CURRENT["real_attempt_quote"] = round(float(real_single), 2)
+                                _audit_real_decision("submitted", "fok_submitted", {
+                                    "target_quote": round(float(real_kelly_total), 4),
+                                    "attempt_quote": round(float(real_single), 4),
+                                    "limit_price": round(float(limit_px), 4),
+                                    "platform_min_quote": round(float(platform_min_quote), 4),
+                                })
             except Exception as e:
                 logger.warning("real window fok submit failed: %s", e)
                 _SIM_CURRENT["real_status"] = "real_submit_error"
                 _SIM_CURRENT["real_decision_stage"] = "exception"
                 _SIM_CURRENT["real_block_reason"] = str(e)[:120]
+                _audit_real_decision("error", "real_submit_error", {"error": str(e)[:240]})
 
         if has_opposite_position:
             _SIM_CURRENT["reverse_direction_allowed"] = True
@@ -1692,10 +1759,6 @@ class LiveRunner:
         if has_same_position:
             return "ADD"
         if phase <= 1:
-            return "ENTRY_VALUE"
-        if phase == 2 and p_side >= 0.35 and ask < 0.80:
-            return "ENTRY_VALUE"
-        if phase >= 3 and ask < 0.80 and p_side >= 0.45:
             return "ENTRY_VALUE"
         return "ENTRY_TREND"
 
