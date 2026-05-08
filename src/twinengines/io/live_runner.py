@@ -1777,11 +1777,11 @@ class LiveRunner:
     @staticmethod
     def _phase_gate_rule(phase: int) -> tuple[float, int, float]:
         rules = {
-            0: (0.60, 2, 0.08),
-            1: (0.65, 3, 0.06),
+            0: (0.60, 6, 0.00),
+            1: (0.65, 5, 0.02),
             2: (0.70, 4, 0.04),
-            3: (0.75, 5, 0.02),
-            4: (0.80, 6, 0.0),
+            3: (0.65, 3, 0.06),
+            4: (0.60, 2, 0.08),
         }
         return rules.get(max(0, min(4, int(phase))), rules[4])
 
