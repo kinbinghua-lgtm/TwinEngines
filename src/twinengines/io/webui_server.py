@@ -655,6 +655,8 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
         ask_checks.append(("trend_max", "<=", float(cw.get('trend_max_ask'))))
     if cw.get('trend_max_ask_exclusive') is not None:
         ask_checks.append(("trend_max_excl", "<", float(cw.get('trend_max_ask_exclusive'))))
+    elif phase_num is not None and phase_num >= 2:
+        ask_checks.append(("trend_max_excl", "<", 0.80))
     if cw.get('add_max_ask_exclusive') is not None:
         ask_checks.append(("add_max_excl", "<", float(cw.get('add_max_ask_exclusive'))))
     if not decision_pending and ask_checks:
@@ -665,12 +667,11 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     if not decision_pending and required_rising is not None and required_rising > 0:
         rising_ok = (int(required_rising) == 5 and bool(cw.get('p_rising_5s'))) or (int(required_rising) == 8 and bool(cw.get('p_rising_8s')))
         real.append(c("rising", "连续确认", "pass" if rising_ok else "fail", f"要求={int(required_rising)}s；5s={bool(cw.get('p_rising_5s'))}；8s={bool(cw.get('p_rising_8s'))}"))
-    if not decision_pending and req_ev is not None and req_ev > -0.5:
-        if trade_intent == "ENTRY_TREND":
-            net_ev = friction_adjusted_ev if friction_adjusted_ev is not None else (best_prob / (ask * 1.005) - 1.0 if best_prob is not None and ask is not None and ask > 0 else None)
-            real.append(c("ev", "扣摩擦后EV", "pass" if net_ev is not None and net_ev > 0 else "fail" if net_ev is not None else "unknown", f"当前={round(net_ev, 6) if net_ev is not None else '--'}；要求 > 0；原始EV={ev if ev is not None else '--'}；摩擦系数={cw.get('friction_multiplier', 1.005)}"))
-        else:
-            real.append(c("ev", "EV", "pass" if ev is not None and ((trade_intent == "ENTRY_VALUE" and phase_num is not None and phase_num <= 1 and ev > req_ev) or not (trade_intent == "ENTRY_VALUE" and phase_num is not None and phase_num <= 1) and ev >= req_ev) else "fail" if ev is not None else "unknown", f"UP={ev_up if ev_up is not None else '--'}；DOWN={ev_down if ev_down is not None else '--'}；当前={ev if ev is not None else '--'}；要求 {'>' if trade_intent == 'ENTRY_VALUE' and phase_num is not None and phase_num <= 1 else '>='} {req_ev}"))
+    if not decision_pending and phase_num is not None and phase_num >= 2:
+        net_ev = friction_adjusted_ev if friction_adjusted_ev is not None else (best_prob / (ask * 1.005) - 1.0 if best_prob is not None and ask is not None and ask > 0 else None)
+        real.append(c("ev", "扣摩擦后EV", "pass" if net_ev is not None and net_ev > 0 else "fail" if net_ev is not None else "unknown", f"当前={round(net_ev, 6) if net_ev is not None else '--'}；要求 > 0；原始EV={ev if ev is not None else '--'}；摩擦系数={cw.get('friction_multiplier', 1.005)}"))
+    elif not decision_pending and req_ev is not None and req_ev > -0.5:
+        real.append(c("ev", "EV", "pass" if ev is not None and ev > req_ev else "fail" if ev is not None else "unknown", f"UP={ev_up if ev_up is not None else '--'}；DOWN={ev_down if ev_down is not None else '--'}；当前={ev if ev is not None else '--'}；要求 > {req_ev}"))
     if not decision_pending and bool(cw.get("has_same_position")) and bool(cw.get("has_opposite_position")):
         real.append(c("hedged_lock", "双边锁定", "fail", "已双边持仓，禁止继续加仓"))
     if not decision_pending and intent_allowed is True:
