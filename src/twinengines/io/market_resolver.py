@@ -50,7 +50,7 @@ class MarketResolverCfg:
     url: str = "https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200"
     keywords: tuple = ("Bitcoin", "BTC")
     horizon_minutes: int = 5
-    refresh_interval_sec: float = 60.0
+    refresh_interval_sec: float = 5.0
     request_timeout_sec: float = 8.0
     user_agent: str = "TwinEngines/1.0"
     enable_slug_fallback: bool = True
@@ -95,6 +95,11 @@ class MarketResolver:
     # ---------------- 状态 ----------------
 
     def get_active(self) -> Optional[ActiveMarket]:
+        with self._lock:
+            active = self._active
+            expired = bool(active is not None and active.end_ts_ms > 0 and active.end_ts_ms < time.time() * 1000)
+        if active is None or expired:
+            self.refresh_once()
         with self._lock:
             if self._active is None:
                 return None
