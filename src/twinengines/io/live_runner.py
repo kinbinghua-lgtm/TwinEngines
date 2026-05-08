@@ -865,9 +865,15 @@ class LiveRunner:
         opposite_dir = "down" if best_dir == "up" else "up"
         opposite_key = f"{window_id}:{opposite_dir}"
         opposite_real = _REAL_WINDOW_ORDERS.get(opposite_key) or {}
-        has_opposite_position = opposite_key in win_target or float(opposite_real.get("filled_shares", 0.0) or 0.0) > 1e-9
+        has_opposite_position = float(opposite_real.get("filled_shares", 0.0) or 0.0) > 1e-9
         same_real = _REAL_WINDOW_ORDERS.get(dir_key) or {}
-        has_same_position = dir_key in win_target or float(same_real.get("filled_shares", 0.0) or 0.0) > 1e-9
+        has_same_position = float(same_real.get("filled_shares", 0.0) or 0.0) > 1e-9
+        shadow_has_opposite_position = opposite_key in win_target
+        shadow_has_same_position = dir_key in win_target
+        _SIM_CURRENT["has_same_position"] = bool(has_same_position)
+        _SIM_CURRENT["has_opposite_position"] = bool(has_opposite_position)
+        _SIM_CURRENT["shadow_has_same_target"] = bool(shadow_has_same_position)
+        _SIM_CURRENT["shadow_has_opposite_target"] = bool(shadow_has_opposite_position)
         is_hedged_locked = bool(has_same_position and has_opposite_position)
         if is_hedged_locked:
             _SIM_CURRENT["best_dir"] = best_dir

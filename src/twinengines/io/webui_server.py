@@ -490,7 +490,7 @@ def summary_payload(root: Path) -> dict[str, Any]:
     return {"ok": True, "real_balance_usdc": real_balance, "real_pending_redeem_usdc": None, "real_redeem_ok": None, "shadow_equity_usdc": shadow_equity, "shadow_equity_note": None if shadow_equity is not None else "无影子账户数据"}
 
 def _phase_box_condition_subset(phase_num, all_conditions):
-    keys_by_phase = {0: {"prob", "ev"}, 1: {"prob", "ev"}, 2: {"prob", "ask_rule", "ev"}, 3: {"prob", "ask_rule", "ev", "rising"}, 4: {"prob", "ask_rule", "ev", "rising"}}
+    keys_by_phase = {0: {"intent", "prob", "ev"}, 1: {"intent", "prob", "ev"}, 2: {"intent", "prob", "ask_rule", "ev"}, 3: {"intent", "prob", "ask_rule", "ev", "rising"}, 4: {"intent", "prob", "ask_rule", "ev", "rising"}}
     if not isinstance(phase_num, int):
         return []
     keys = keys_by_phase.get(phase_num, set())
@@ -646,6 +646,8 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
         real.append(c("intent", "阶段门控", "pass" if intent_allowed is True else "fail" if intent_allowed is False else "unknown", f"{intent_reason}"))
     if not decision_pending and req_prob is not None and req_prob > 0:
         real.append(c("prob", "概率", "pass" if best_prob is not None and best_prob >= req_prob else "fail" if best_prob is not None else "unknown", f"当前={best_prob if best_prob is not None else '--'}；要求 >= {req_prob}"))
+    elif not decision_pending and phase_num is not None and phase_num >= 2:
+        real.append(c("prob", "概率", "pass" if best_prob is not None and best_prob >= 0.60 else "fail" if best_prob is not None else "unknown", f"当前={best_prob if best_prob is not None else '--'}；要求 >= 0.6"))
     ask_checks = []
     if cw.get('value_max_ask') is not None:
         ask_checks.append(("value_max", "<=", float(cw.get('value_max_ask'))))
