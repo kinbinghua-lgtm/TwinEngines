@@ -906,6 +906,32 @@ class LiveRunner:
         # 5-minute lifecycle strategy: classify intent first, then apply phase-aware policy.
         phase_req_prob, phase_confirm_sec, phase_req_net_ev = self._phase_gate_rule(phase)
         p_confirm_ok = self._is_probability_above(window_id, best_dir, seconds=phase_confirm_sec, threshold=phase_req_prob)
+        p_stability_sec = 0
+        p_stability_max_drop = 0.0
+        p_stability_ok = True
+        p_stability_drop = None
+        if phase == 3:
+            p_stability_sec = 5
+            p_stability_max_drop = 0.04
+        elif phase >= 4:
+            p_stability_sec = 8
+            p_stability_max_drop = 0.03
+        if p_stability_sec > 0:
+            p_stability_ok, p_stability_drop = self._probability_drawdown_ok(
+                window_id,
+                best_dir,
+                seconds=p_stability_sec,
+                max_drop=p_stability_max_drop,
+            )
+        low_price_high_ev_monotonic_required = bool(ask < 0.50 and best_ev_simple > 0.30)
+        low_price_high_ev_monotonic_sec = 8 if phase >= 4 else 5
+        low_price_high_ev_monotonic_ok = True
+        if low_price_high_ev_monotonic_required:
+            low_price_high_ev_monotonic_ok = self._is_probability_rising(
+                window_id,
+                best_dir,
+                seconds=low_price_high_ev_monotonic_sec,
+            )
         lifecycle = self._evaluate_lifecycle_intent_gate(
             phase=phase,
             p_side=best_side_prob,
@@ -917,6 +943,13 @@ class LiveRunner:
             has_opposite_position=has_opposite_position,
             p_confirm_ok=p_confirm_ok,
             p_confirm_sec=phase_confirm_sec,
+            p_stability_ok=p_stability_ok,
+            p_stability_sec=p_stability_sec,
+            p_stability_max_drop=p_stability_max_drop,
+            p_stability_drop=p_stability_drop,
+            low_price_high_ev_monotonic_required=low_price_high_ev_monotonic_required,
+            low_price_high_ev_monotonic_ok=low_price_high_ev_monotonic_ok,
+            low_price_high_ev_monotonic_sec=low_price_high_ev_monotonic_sec if low_price_high_ev_monotonic_required else 0,
         )
         trade_intent = str(lifecycle["trade_intent"])
         req_edge = float(lifecycle["req_edge"])
@@ -952,6 +985,13 @@ class LiveRunner:
             "p_confirm_required_sec",
             "p_confirm_ok",
             "p_confirm_threshold",
+            "p_stability_ok",
+            "p_stability_required_sec",
+            "p_stability_max_drop",
+            "p_stability_drop",
+            "low_price_high_ev_monotonic_required",
+            "low_price_high_ev_monotonic_ok",
+            "low_price_high_ev_monotonic_sec",
             "friction_adjusted_ev",
             "friction_multiplier",
         ):
@@ -1006,8 +1046,8 @@ class LiveRunner:
         if trade_intent == "ENTRY_VALUE" and ask < 0.10:
             sizing_tier = f"floor_lottery_{sizing_tier}"
         _SIM_CURRENT["sizing_fraction"] = round(sizing_fraction, 4)
-        runtime_window_cap_abs = float(getattr(self.cfg.runtime, "real_max_window_risk_usdc", 5.0) or 0.0)
-        runtime_window_cap_ratio = float(getattr(self.cfg.runtime, "real_max_window_risk_ratio", 0.12) or 0.0)
+        runtime_window_cap_abs = float(getattr(self.cfg.runtime, "real_max_window_risk_usdc", 0.0) or 0.0)
+        runtime_window_cap_ratio = float(getattr(self.cfg.runtime, "real_max_window_risk_ratio", 0.30) or 0.0)
         effective_max_stake_ratio = min(max_stake_ratio, runtime_window_cap_ratio) if runtime_window_cap_ratio > 0 else max_stake_ratio
         _SIM_CURRENT["max_stake_ratio"] = round(max_stake_ratio, 4)
         _SIM_CURRENT["effective_max_stake_ratio"] = round(effective_max_stake_ratio, 4)
@@ -1810,7 +1850,20 @@ class LiveRunner:
         if len(recent) < max(3, int(seconds) - 1):
             return False
         vals = [float(x[1] if direction == "up" else x[2]) for x in recent[-int(seconds):]]
-        return all(vals[i] >= vals[i - 1] - 1e-9 for i in range(1, len(vals))) and vals[-1] > vals[0]
+        return all(vals[i] >= vals[i - 1] - 1e-9 for i in range(1, len(vals)))
+
+    def _probability_drawdown_ok(self, window_id: str, direction: str, *, seconds: int, max_drop: float) -> tuple[bool, Optional[float]]:
+        hist = self._prob_history.get(str(window_id)) or []
+        required = max(2, int(seconds))
+        if len(hist) < required:
+            return False, None
+        now_ms = int(time.time() * 1000)
+        recent = [x for x in hist if int(x[0]) >= now_ms - required * 1000]
+        if len(recent) < required:
+            return False, None
+        vals = [float(x[1] if direction == "up" else x[2]) for x in recent[-required:]]
+        drop = max(0.0, vals[0] - vals[-1])
+        return drop <= float(max_drop) + 1e-9, drop
 
     @staticmethod
     def _classify_lifecycle_trade_intent(
@@ -1846,6 +1899,13 @@ class LiveRunner:
         has_opposite_position: bool,
         p_confirm_ok: bool = False,
         p_confirm_sec: int = 0,
+        p_stability_ok: bool = True,
+        p_stability_sec: int = 0,
+        p_stability_max_drop: float = 0.0,
+        p_stability_drop: Optional[float] = None,
+        low_price_high_ev_monotonic_required: bool = False,
+        low_price_high_ev_monotonic_ok: bool = True,
+        low_price_high_ev_monotonic_sec: int = 0,
     ) -> dict[str, Any]:
         intent = cls._classify_lifecycle_trade_intent(
             phase=phase,
@@ -1864,6 +1924,13 @@ class LiveRunner:
             "has_opposite_position": bool(has_opposite_position),
             "p_confirm_ok": bool(p_confirm_ok),
             "p_confirm_required_sec": int(p_confirm_sec or 0),
+            "p_stability_ok": bool(p_stability_ok),
+            "p_stability_required_sec": int(p_stability_sec or 0),
+            "p_stability_max_drop": float(p_stability_max_drop or 0.0),
+            "p_stability_drop": round(float(p_stability_drop), 6) if p_stability_drop is not None else None,
+            "low_price_high_ev_monotonic_required": bool(low_price_high_ev_monotonic_required),
+            "low_price_high_ev_monotonic_ok": bool(low_price_high_ev_monotonic_ok),
+            "low_price_high_ev_monotonic_sec": int(low_price_high_ev_monotonic_sec or 0),
         }
 
         def result(allowed: bool, reason: str, policy: str, req_prob: float, req_edge: float, req_ev: float, req_kelly: float, extra: Optional[dict[str, Any]] = None) -> dict[str, Any]:
@@ -1887,7 +1954,9 @@ class LiveRunner:
         p_ok = bool(p_confirm_ok) and p_side > req_prob
         ask_ok = ask < 0.80
         ev_ok = friction_adjusted_ev > req_net_ev
-        ok = p_ok and ask_ok and ev_ok
+        stability_ok = bool(p_stability_ok)
+        monotonic_ok = (not low_price_high_ev_monotonic_required) or bool(low_price_high_ev_monotonic_ok)
+        ok = p_ok and ask_ok and ev_ok and stability_ok and monotonic_ok
         return result(
             ok,
             f"allowed_phase{max(0, min(4, int(phase)))}_gate" if ok else f"phase{max(0, min(4, int(phase)))}_gate_not_met",
@@ -1901,6 +1970,13 @@ class LiveRunner:
                 "p_confirm_required_sec": int(confirm_sec),
                 "p_confirm_ok": bool(p_confirm_ok),
                 "p_confirm_threshold": float(req_prob),
+                "p_stability_ok": bool(p_stability_ok),
+                "p_stability_required_sec": int(p_stability_sec or 0),
+                "p_stability_max_drop": round(float(p_stability_max_drop or 0.0), 6),
+                "p_stability_drop": round(float(p_stability_drop), 6) if p_stability_drop is not None else None,
+                "low_price_high_ev_monotonic_required": bool(low_price_high_ev_monotonic_required),
+                "low_price_high_ev_monotonic_ok": bool(low_price_high_ev_monotonic_ok),
+                "low_price_high_ev_monotonic_sec": int(low_price_high_ev_monotonic_sec or 0),
                 "friction_adjusted_ev": round(friction_adjusted_ev, 6),
                 "friction_multiplier": 1.005,
             },
