@@ -35,6 +35,9 @@ class ExitPosition:
     last_p_up: Optional[float] = None
     last_p_down: Optional[float] = None
     strong_reverse_triggered: bool = False
+    exit_intent_reason: Optional[str] = None
+    last_exit_attempt_ts_ms: int = 0
+    exit_failure_count: int = 0
 
 
 @dataclass
@@ -50,6 +53,8 @@ class PositionExitGuardCfg:
     strong_prob_gap_exit: float = 0.12
     catastrophic_adverse_prob_exit: float = 0.78
     held_prob_floor_exit: float = 0.35
+    exit_retry_cooldown_sec: float = 2.0
+    max_exit_attempts_per_position: int = 8
 
 
 class PositionExitGuard:
@@ -212,6 +217,10 @@ class PositionExitGuard:
             pos.last_reason = "market_ended"
             self._audit("exit_guard_closed", pos, {"reason": pos.last_reason})
             return
+        if pos.exit_intent_reason:
+            self._exit_5share_loop(pos, reason=pos.exit_intent_reason)
+            if pos.closed:
+                return
         book = self.client.fetch_book_depth(pos.token_id, max_levels=20)
         if book.get("stale"):
             pos.last_reason = "book_stale"
@@ -260,6 +269,7 @@ class PositionExitGuard:
             return
         if reason in ("direction_probability_reversed", "catastrophic_probability_reversal"):
             pos.strong_reverse_triggered = True
+        pos.exit_intent_reason = reason
         pos.last_reason = reason
         self._audit(f"exit_guard_{reason}", pos, {
             "trigger": trigger,
@@ -276,16 +286,27 @@ class PositionExitGuard:
 
     def _exit_5share_loop(self, pos: ExitPosition, *, reason: str) -> None:
         min_shares = float(POLYMARKET_PLATFORM.min_limit_order_shares)
+        now_ms = int(time.time() * 1000)
+        cooldown_ms = int(max(0.2, float(self.cfg.exit_retry_cooldown_sec)) * 1000)
+        if now_ms - int(pos.last_exit_attempt_ts_ms or 0) < cooldown_ms:
+            return
+        if int(pos.exit_failure_count or 0) >= int(self.cfg.max_exit_attempts_per_position):
+            pos.last_reason = "exit_retry_limit_reached"
+            self._audit("exit_guard_exit_retry_limit", pos, {"reason": reason, "failure_count": int(pos.exit_failure_count or 0)})
+            return
+        pos.last_exit_attempt_ts_ms = now_ms
         sold_any = False
         while pos.remaining_shares + 1e-9 >= min_shares:
             book = self.client.fetch_book_depth(pos.token_id, max_levels=20)
             if book.get("stale"):
                 pos.last_reason = "exit_book_stale"
+                pos.exit_failure_count += 1
                 self._audit("exit_guard_exit_unavailable", pos, {"reason": reason, "failure": "book_stale"})
                 break
             bid = float(book.get("best_bid") or 0.0)
             if bid <= 0:
                 pos.last_reason = "exit_no_best_bid"
+                pos.exit_failure_count += 1
                 self._audit("exit_guard_exit_unavailable", pos, {
                     "reason": reason,
                     "failure": "no_best_bid",
@@ -300,6 +321,7 @@ class PositionExitGuard:
                     chunk = pos.remaining_shares
                 else:
                     pos.last_reason = "exit_quote_too_small"
+                    pos.exit_failure_count += 1
                     self._audit("exit_guard_exit_quote_too_small", pos, {
                         "reason": reason,
                         "bid": round(bid, 4),
@@ -313,6 +335,7 @@ class PositionExitGuard:
                 chunk = min_sell_shares if pos.remaining_shares > min_sell_shares * 2 else pos.remaining_shares
             if chunk * bid < min_exit_quote:
                 pos.last_reason = "exit_quote_too_small"
+                pos.exit_failure_count += 1
                 self._audit("exit_guard_exit_quote_too_small", pos, {
                     "reason": reason,
                     "bid": round(bid, 4),
@@ -327,6 +350,7 @@ class PositionExitGuard:
             self._audit("exit_guard_order", pos, {"client_order_id": coid, "reason": reason, "price": round(bid, 4), "target_shares": round(chunk, 4), "state": ticket.state.value, "error": ticket.last_error, "exchange_order_id": ticket.exchange_order_id, "filled_shares": round(float(ticket.filled_size_shares or 0.0), 4)})
             if ticket.state not in (OrderState.FILLED, OrderState.PARTIAL) or float(ticket.filled_size_shares or 0.0) <= 0:
                 pos.last_reason = f"exit_failed:{ticket.state.value}:{ticket.last_error}"
+                pos.exit_failure_count += 1
                 self._audit("exit_guard_exit_failed", pos, {
                     "reason": reason,
                     "state": ticket.state.value,
@@ -339,6 +363,7 @@ class PositionExitGuard:
             sold = min(float(pos.remaining_shares), float(ticket.filled_size_shares or 0.0))
             pos.remaining_shares = max(0.0, float(pos.remaining_shares) - sold)
             pos.last_exit_ts_ms = int(time.time() * 1000)
+            pos.exit_failure_count = 0
             pos.last_reason = reason
             sold_any = True
             logger.info("exit_guard sold window_id=%s reason=%s shares=%.4f price=%.4f remaining=%.4f", pos.window_id, reason, sold, bid, pos.remaining_shares)
@@ -346,6 +371,7 @@ class PositionExitGuard:
             self._persist_positions()
         if pos.remaining_shares + 1e-9 < min_shares:
             pos.closed = True
+            pos.exit_intent_reason = None
             self._audit("exit_guard_closed", pos, {"reason": "fully_or_dust_exited"})
 
     @staticmethod
@@ -363,6 +389,6 @@ class PositionExitGuard:
     def _audit(self, kind: str, pos: ExitPosition, extra: dict[str, Any]) -> None:
         if self.store is None:
             return
-        payload = {"window_id": pos.window_id, "direction": pos.direction, "token_id_suffix": pos.token_id[-12:], "entry_price": round(pos.entry_price, 4), "entry_cost_usdc": round(pos.entry_cost_usdc, 2), "entry_shares": round(pos.entry_shares, 4), "remaining_shares": round(pos.remaining_shares, 4), "max_adverse_prob_seen": round(float(pos.max_adverse_prob_seen or 0.0), 4), "max_held_prob_seen": round(float(pos.max_held_prob_seen or 0.0), 4), "last_p_up": pos.last_p_up, "last_p_down": pos.last_p_down, "last_reason": pos.last_reason}
+        payload = {"window_id": pos.window_id, "direction": pos.direction, "token_id_suffix": pos.token_id[-12:], "entry_price": round(pos.entry_price, 4), "entry_cost_usdc": round(pos.entry_cost_usdc, 2), "entry_shares": round(pos.entry_shares, 4), "remaining_shares": round(pos.remaining_shares, 4), "max_adverse_prob_seen": round(float(pos.max_adverse_prob_seen or 0.0), 4), "max_held_prob_seen": round(float(pos.max_held_prob_seen or 0.0), 4), "last_p_up": pos.last_p_up, "last_p_down": pos.last_p_down, "last_reason": pos.last_reason, "exit_intent_reason": pos.exit_intent_reason, "exit_failure_count": int(pos.exit_failure_count or 0), "last_exit_attempt_ts_ms": int(pos.last_exit_attempt_ts_ms or 0)}
         payload.update(extra)
         self.store.append_audit(kind, payload)

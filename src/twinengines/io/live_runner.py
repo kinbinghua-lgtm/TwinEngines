@@ -71,6 +71,8 @@ _SIM_CURRENT: dict = {}
 _SIM_WIN_BUDGET: dict[str, float] = {}  # 影子盘每窗口剩余 Kelly 预算
 _SIM_WIN_TARGET: dict[str, float] = {}  # 影子盘每窗口当前目标仓位
 _SIM_WIN_DIR: dict[str, str] = {}       # 影子盘每窗口首次成交方向
+_SIM_WIN_ENTRY_PROB: dict[str, float] = {}
+_SIM_WIN_LAST_PROB: dict[str, float] = {}
 _REAL_RETRYABLE_STATES = {OrderState.REJECTED, OrderState.CANCELLED, OrderState.TIMEOUT}
 _REAL_UNKNOWN_ERRORS = ("unknown", "timeout", "query_failed", "post_order_exception")
       # 真实盘每窗口首次成交方向
@@ -514,11 +516,13 @@ class LiveRunner:
 
     def _on_shadow_window_close(self, window_id: str) -> None:
         """窗口关闭时结算影子盘和真实盘。"""
-        global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR, _SIM_WIN_TARGET
+        global _SIM_FILLED, _SIM_CURRENT, _SIM_WIN_BUDGET, _SIM_WIN_DIR, _SIM_WIN_TARGET, _SIM_WIN_ENTRY_PROB, _SIM_WIN_LAST_PROB
         _SIM_FILLED.discard(window_id)
         _REAL_WINDOW_ORDERS.pop(window_id, None)
         _SIM_WIN_BUDGET.pop(window_id, None)
         _SIM_WIN_TARGET.pop(window_id, None)
+        _SIM_WIN_ENTRY_PROB.pop(window_id, None)
+        _SIM_WIN_LAST_PROB.pop(window_id, None)
         _SIM_WIN_DIR.pop(window_id, None)
         _SIM_CURRENT.clear()
         
@@ -699,7 +703,7 @@ class LiveRunner:
 
     def _simulate_order_from_signal(self, event: dict) -> None:
         global _SIM_FILLED, _SIM_CURRENT
-        global _SIM_WIN_BUDGET, _SIM_WIN_DIR, _SIM_WIN_TARGET
+        global _SIM_WIN_BUDGET, _SIM_WIN_DIR, _SIM_WIN_TARGET, _SIM_WIN_ENTRY_PROB, _SIM_WIN_LAST_PROB
         window_id = str(event.get("window_id") or "")
         # 真实盘是否活跃
         is_real_mode = (not self.cfg.dry_run_signals
@@ -999,16 +1003,32 @@ class LiveRunner:
             win_target[window_id] = proposed_target
             win_budget[window_id] = proposed_target
             win_dir[window_id] = best_dir
+            _SIM_WIN_ENTRY_PROB[window_id] = float(best_side_prob)
+            _SIM_WIN_LAST_PROB[window_id] = float(best_side_prob)
             kelly_total = proposed_target
         else:
             current_target = float(win_target.get(window_id, win_budget.get(window_id, 0.0)))
             if best_dir == win_dir.get(window_id) and proposed_target > current_target + 1e-9:
+                entry_prob = float(_SIM_WIN_ENTRY_PROB.get(window_id, best_side_prob))
+                last_prob = float(_SIM_WIN_LAST_PROB.get(window_id, entry_prob))
+                probability_deteriorated = best_side_prob < max(entry_prob - 0.05, last_prob - 0.03)
+                if probability_deteriorated:
+                    _SIM_CURRENT["status"] = "add_blocked_probability_deteriorated"
+                    _SIM_CURRENT["add_blocked"] = True
+                    _record_decision(0, "rejected", "add_blocked_probability_deteriorated", {
+                        "entry_prob": round(entry_prob, 4),
+                        "last_prob": round(last_prob, 4),
+                        "add_blocked": True,
+                    })
+                    self._write_current_window_snapshot()
+                    return
                 delta = proposed_target - current_target
                 win_target[window_id] = proposed_target
                 win_budget[window_id] = float(win_budget.get(window_id, 0.0)) + delta
                 filled_set.discard(window_id)
                 _SIM_CURRENT["target_upgraded"] = True
                 _SIM_CURRENT["target_upgrade_delta"] = round(delta, 2)
+            _SIM_WIN_LAST_PROB[window_id] = float(best_side_prob)
             kelly_total = float(win_target.get(window_id, proposed_target))
 
         remaining = win_budget.get(window_id, 0)
@@ -1027,6 +1047,7 @@ class LiveRunner:
             "budget_remain": round(win_budget.get(window_id, 0), 2),
             "budget_total": round(kelly_total, 2),
             "target_upgraded": bool(_SIM_CURRENT.get("target_upgraded", False)),
+            "target_upgrade_count": 1 if bool(_SIM_CURRENT.get("target_upgraded", False)) else 0,
         })
 
         if win_budget[window_id] <= 0:
@@ -1156,6 +1177,9 @@ class LiveRunner:
                 "attempt_seq": 0,
                 "no_fill_count": 0,
                 "created_ts_ms": int(time.time() * 1000),
+                "entry_prob": float((decision_meta or {}).get("best_side_prob") or 0.0),
+                "entry_phase": (decision_meta or {}).get("phase"),
+                "add_blocked": False,
                 "decision_meta": dict(decision_meta or {}),
             }
             _REAL_WINDOW_ORDERS[window_id] = state
@@ -1212,9 +1236,42 @@ class LiveRunner:
                 })
             else:
                 spent_quote = max(0.0, float(state.get("spent_quote", 0.0)))
-                total_quote = max(float(state.get("target_quote", target_quote)), float(target_quote))
+                prior_target = float(state.get("target_quote", target_quote))
+                new_target = float(target_quote)
+                current_prob = float((decision_meta or {}).get("best_side_prob") or 0.0)
+                entry_prob = float(state.get("entry_prob") or current_prob or 0.0)
+                last_prob = float(state.get("last_best_side_prob") or entry_prob or current_prob or 0.0)
+                target_upgrade_requested = new_target > prior_target + 1e-9
+                probability_deteriorated = bool(current_prob > 0 and current_prob < max(entry_prob - 0.05, last_prob - 0.03))
+                if target_upgrade_requested and probability_deteriorated:
+                    state["locked"] = True
+                    state["lock_reason"] = "add_blocked_probability_deteriorated"
+                    state["add_blocked"] = True
+                    state["blocked_current_prob"] = current_prob
+                    state["blocked_entry_prob"] = entry_prob
+                    state["blocked_last_prob"] = last_prob
+                    logger.warning(
+                        "real window add blocked: probability deteriorated window_id=%s dir=%s current=%.4f entry=%.4f last=%.4f",
+                        window_id, state.get("direction"), current_prob, entry_prob, last_prob,
+                    )
+                    if self.store is not None:
+                        self.store.append_audit("order_add_blocked", {
+                            "window_id": window_id,
+                            "direction": state.get("direction"),
+                            "reason": "probability_deteriorated",
+                            "current_prob": round(current_prob, 4),
+                            "entry_prob": round(entry_prob, 4),
+                            "last_prob": round(last_prob, 4),
+                            "prior_target_quote": round(prior_target, 4),
+                            "requested_target_quote": round(new_target, 4),
+                            **dict(decision_meta or {}),
+                        })
+                    return None
+                total_quote = max(prior_target, new_target)
                 if total_quote > float(state.get("target_quote", 0.0)) + 1e-9:
                     state["target_upgrade_count"] = int(state.get("target_upgrade_count", 0)) + 1
+                    state["last_upgrade_phase"] = (decision_meta or {}).get("phase")
+                state["last_best_side_prob"] = current_prob or last_prob
                 remaining_quote = max(0.0, total_quote - spent_quote)
                 state.update({
                     "side_label": side_label,
@@ -1338,6 +1395,8 @@ class LiveRunner:
                 "req_kelly_raw": meta.get("req_kelly_raw"),
                 "sizing_fraction": meta.get("sizing_fraction"),
                 "max_stake_ratio": meta.get("max_stake_ratio"),
+                "target_upgrade_count": meta.get("target_upgrade_count"),
+                "add_blocked": meta.get("add_blocked"),
                 "sizing_tier": meta.get("sizing_tier"),
                 "fill_amount": round(fill_amt, 2),
                 "d_abs_pct": round(d_abs, 4),
