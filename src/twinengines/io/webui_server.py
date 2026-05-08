@@ -573,6 +573,14 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     phase_policy = str(cw.get("lifecycle_phase_policy") or "--")
     intent_allowed = cw.get("intent_allowed")
     decision_pending = bool(cw.get("decision_pending"))
+    phase_num = int(phase) if isinstance(phase, int) or (isinstance(phase, str) and str(phase).isdigit()) else None
+    stale_phase_policy = bool(
+        (phase_num is not None and phase_num >= 2 and trade_intent == "ENTRY_VALUE")
+        or (phase_num is not None and phase_num >= 2 and phase_policy in ("phase0_ev_only", "phase1_ev_only"))
+        or (phase_num is not None and phase_num <= 1 and trade_intent == "ENTRY_TREND")
+    )
+    if stale_phase_policy:
+        decision_pending = True
     def c(k,l,s,t): return {"key": k, "label": l, "status": s, "text": t}
     real = [
         c("phase", "当前阶段/通道", "pass", f"Phase={phase}；意图={trade_intent}；策略={phase_policy}"),
@@ -581,7 +589,8 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
         c("book", "盘口", "pass" if ask_up and ask_down else "fail", f"UP={ask_up}，DOWN={ask_down}；当前 {dir_label} ask={ask}"),
     ]
     if decision_pending:
-        real.append(c("decision_pending", "决策计算", "warn", "当前 tick 正在计算盘口/方向/门控，暂不显示上一 tick 的准入条件"))
+        pending_reason = "阶段/通道旧快照不一致，等待下一次完整决策" if stale_phase_policy else "当前 tick 正在计算盘口/方向/门控，暂不显示上一 tick 的准入条件"
+        real.append(c("decision_pending", "决策计算", "warn", pending_reason))
     elif trade_intent == "ENTRY_VALUE":
         direction_text = "EV通道：p>=0.35 的方向参与EV对比，允许 p<0.5"
     elif trade_intent in ("ENTRY_TREND", "HEDGE"):
