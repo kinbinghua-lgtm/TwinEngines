@@ -199,6 +199,16 @@ class PositionExitGuard:
             return
         self.store.put("exit_guard.positions", [asdict(p) for p in self._positions.values() if not p.closed])
 
+    def _has_opposite_open_position(self, pos: ExitPosition) -> bool:
+        opposite = "down" if pos.direction == "up" else "up"
+        for other in self._positions.values():
+            if other is pos or other.closed:
+                continue
+            if str(other.window_id) == str(pos.window_id) and str(other.direction).lower() == opposite:
+                if float(other.remaining_shares) + 1e-9 >= float(POLYMARKET_PLATFORM.min_limit_order_shares):
+                    return True
+        return False
+
     def _check_position(self, pos: ExitPosition, *, now_ms: int) -> None:
         min_shares = float(POLYMARKET_PLATFORM.min_limit_order_shares)
         if pos.remaining_shares + 1e-9 < min_shares:
@@ -215,6 +225,10 @@ class PositionExitGuard:
             self._exit_5share_loop(pos, reason=pos.exit_intent_reason)
             if pos.closed:
                 return
+        if self._has_opposite_open_position(pos):
+            pos.last_reason = "hedged_locked_hold_to_settlement"
+            self._audit("exit_guard_hedged_locked", pos, {"reason": pos.last_reason})
+            return
         book = self.client.fetch_book_depth(pos.token_id, max_levels=20)
         if book.get("stale"):
             pos.last_reason = "book_stale"
