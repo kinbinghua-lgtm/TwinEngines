@@ -928,9 +928,9 @@ class LiveRunner:
             self._write_current_window_snapshot()
             return
 
-        # unified entry/add/hedge gate: p>0.50, ask<0.80, (ask-p)>0.04 in last 10s (allow 1 miss)
+        # unified entry/add gate: p>0.50, ask<0.70, (ask-p)>0.02 in last 10s (allow 2 misses)
         req_prob = 0.50
-        req_ask_max = 0.80
+        req_ask_max = 0.70
         req_gap = 0.02
         req_gap_sec = 10
         allow_misses = 2
@@ -939,7 +939,6 @@ class LiveRunner:
         gap_ok = self._is_gap_majority_above(window_id, best_dir, seconds=req_gap_sec, threshold=req_gap, allow_misses=allow_misses)
         p_ok = float(best_side_prob) > req_prob
         ask_ok = float(ask) < req_ask_max
-        gate_ok = bool(p_ok and ask_ok and gap_ok)
 
         _SIM_CURRENT["best_dir"] = best_dir
         _SIM_CURRENT["best_side_prob"] = round(float(best_side_prob), 4)
@@ -953,11 +952,34 @@ class LiveRunner:
         _SIM_CURRENT["p_ok"] = bool(p_ok)
         _SIM_CURRENT["ask_ok"] = bool(ask_ok)
 
-        # classify trade intent (no gate logic here)
+        # hedge alt condition: p-ask > 0.02 in last 10s (allow 2 misses)
+        hedge_req_edge = 0.02
+        hedge_edge = float(best_side_prob) - float(ask)
+        self._record_hedge_edge_history(window_id, best_dir, edge=hedge_edge)
+        hedge_edge_ok = self._is_hedge_edge_majority_above(window_id, best_dir, seconds=req_gap_sec, threshold=hedge_req_edge, allow_misses=allow_misses)
+        _SIM_CURRENT["hedge_req_edge"] = hedge_req_edge
+        _SIM_CURRENT["hedge_edge"] = round(float(hedge_edge), 6)
+        _SIM_CURRENT["hedge_edge_ok"] = bool(hedge_edge_ok)
+
         trade_intent = self._classify_trade_intent(
             has_same_position=has_same_position,
             has_opposite_position=has_opposite_position,
         )
+
+        if trade_intent == "HEDGE":
+            gate_ok = bool((p_ok and ask_ok and gap_ok) or hedge_edge_ok)
+        else:
+            gate_ok = bool(p_ok and ask_ok and gap_ok)
+
+        trade_intent = self._classify_trade_intent(
+            has_same_position=has_same_position,
+            has_opposite_position=has_opposite_position,
+        )
+
+        if trade_intent == "HEDGE":
+            gate_ok = bool((p_ok and ask_ok and gap_ok) or hedge_edge_ok)
+        else:
+            gate_ok = bool(p_ok and ask_ok and gap_ok)
         
         # unified gate is the only gate
         if not gate_ok:
