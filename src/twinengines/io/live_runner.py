@@ -810,7 +810,8 @@ class LiveRunner:
             "seq_rule_required", "seq_rule_ok", "seq_rule_window", "seq_rule_a", "seq_rule_b",
             "real_status", "real_decision_stage", "real_block_reason", "real_skip_reason",
             "real_target_quote", "real_attempt_quote", "real_kelly_raw_quote", "real_platform_min_quote",
-            "real_window_ratio_cap", "real_hard_window_cap",
+            "real_window_ratio_cap", "real_hard_window_cap", "real_global_ratio_cap", "real_global_window_cap",
+            "real_platform_min_global_cap_override_used",
             "real_min_5_shares_quote", "real_min_order_quote", "real_limit_px", "real_window_cap",
             "real_min_abs_boost_available", "real_min_abs_boost_cap", "real_min_abs_boost_used", "real_min_funding_boost_key",
             "real_min_funding_boost_used_this_decision", "real_platform_min_boost_available",
@@ -1121,6 +1122,9 @@ class LiveRunner:
 
         _SIM_CURRENT["real_window_ratio_cap"] = None
         _SIM_CURRENT["real_hard_window_cap"] = None
+        _SIM_CURRENT["real_global_ratio_cap"] = None
+        _SIM_CURRENT["real_global_window_cap"] = None
+        _SIM_CURRENT["real_platform_min_global_cap_override_used"] = False
 
         if not is_real_mode:
             _SIM_CURRENT["real_status"] = "real_mode_disabled"
@@ -1230,24 +1234,30 @@ class LiveRunner:
                                     real_kelly_total = 0.0
                             if real_kelly_total >= platform_min_quote:
                                 window_abs_cap = runtime_window_cap_abs if runtime_window_cap_abs > 0 else float("inf")
-                                window_ratio_cap = float(real_equity) * effective_max_stake_ratio if effective_max_stake_ratio > 0 else float("inf")
+                                lifecycle_ratio_cap = float(real_equity) * effective_max_stake_ratio if effective_max_stake_ratio > 0 else float("inf")
+                                global_ratio_cap = float(real_equity) * runtime_window_cap_ratio if runtime_window_cap_ratio > 0 else float("inf")
+                                global_window_cap = min(window_abs_cap, global_ratio_cap)
+                                hard_window_cap = min(window_abs_cap, lifecycle_ratio_cap)
                                 high_prob_min_share_exception = (
                                     trade_intent == "ENTRY_TREND"
                                     and float(best_side_prob) >= 0.80
                                     and float(limit_px) < 0.90
                                 )
-                                min_share_exception = bool(trade_intent == "HEDGE" or high_prob_min_share_exception)
-                                platform_min_one_time_exception = bool(
-                                    bool(_SIM_CURRENT.get("real_platform_min_boost_used"))
-                                    and float(real_kelly_total) <= platform_min_quote + 1e-9
+                                minimum_submit_quote = max(2.50, float(platform_min_quote))
+                                platform_min_override_ok = (
+                                    float(real_kelly_total) <= minimum_submit_quote + 1e-9
+                                    and global_window_cap >= float(real_kelly_total)
+                                    and hard_window_cap < float(real_kelly_total)
                                 )
-                                min_share_exception = bool(min_share_exception or platform_min_one_time_exception)
-                                hard_window_cap = min(window_abs_cap, window_ratio_cap)
-                                if min_share_exception and float(real_kelly_total) <= platform_min_quote + 1e-9:
-                                    hard_window_cap = window_abs_cap
+                                min_share_exception = bool(trade_intent == "HEDGE" or high_prob_min_share_exception or platform_min_override_ok)
+                                if min_share_exception and float(real_kelly_total) <= minimum_submit_quote + 1e-9:
+                                    hard_window_cap = global_window_cap if platform_min_override_ok else window_abs_cap
                                     _SIM_CURRENT["real_min_share_exception"] = True
-                                    _SIM_CURRENT["real_min_share_exception_reason"] = "hedge" if has_opposite_position else "high_prob_price" if high_prob_min_share_exception else "min_funding_top_up" if platform_min_one_time_exception else None
-                                _SIM_CURRENT["real_window_ratio_cap"] = round(float(window_ratio_cap), 4) if math.isfinite(float(window_ratio_cap)) else None
+                                    _SIM_CURRENT["real_min_share_exception_reason"] = "platform_min_global_cap_override" if platform_min_override_ok else "hedge" if has_opposite_position else "high_prob_price" if high_prob_min_share_exception else "min_funding_top_up"
+                                    _SIM_CURRENT["real_platform_min_global_cap_override_used"] = bool(platform_min_override_ok)
+                                _SIM_CURRENT["real_window_ratio_cap"] = round(float(lifecycle_ratio_cap), 4) if math.isfinite(float(lifecycle_ratio_cap)) else None
+                                _SIM_CURRENT["real_global_ratio_cap"] = round(float(global_ratio_cap), 4) if math.isfinite(float(global_ratio_cap)) else None
+                                _SIM_CURRENT["real_global_window_cap"] = round(float(global_window_cap), 4) if math.isfinite(float(global_window_cap)) else None
                                 _SIM_CURRENT["real_hard_window_cap"] = round(float(hard_window_cap), 4) if math.isfinite(float(hard_window_cap)) else None
                                 if hard_window_cap < platform_min_quote:
                                     _SIM_CURRENT["real_status"] = "real_window_cap_below_platform_min"
@@ -1261,15 +1271,19 @@ class LiveRunner:
                                             "reason": "window_cap_below_platform_min",
                                             "window_cap": round(float(hard_window_cap), 4),
                                             "platform_min_quote": round(platform_min_quote, 4),
-                                            "window_ratio_cap": round(float(window_ratio_cap), 4) if math.isfinite(float(window_ratio_cap)) else None,
+                                            "lifecycle_ratio_cap": round(float(lifecycle_ratio_cap), 4) if math.isfinite(float(lifecycle_ratio_cap)) else None,
+                                            "global_window_cap": round(float(global_window_cap), 4) if math.isfinite(float(global_window_cap)) else None,
                                             "effective_max_stake_ratio": round(float(effective_max_stake_ratio), 6),
+                                            "runtime_window_cap_ratio": round(float(runtime_window_cap_ratio), 6),
                                             **signal_meta,
                                         })
                                     _audit_real_decision("not_submitted", "window_cap_below_platform_min", {
                                         "window_cap": round(float(hard_window_cap), 4),
                                         "platform_min_quote": round(float(platform_min_quote), 4),
-                                        "window_ratio_cap": round(float(window_ratio_cap), 4) if math.isfinite(float(window_ratio_cap)) else None,
+                                        "lifecycle_ratio_cap": round(float(lifecycle_ratio_cap), 4) if math.isfinite(float(lifecycle_ratio_cap)) else None,
+                                        "global_window_cap": round(float(global_window_cap), 4) if math.isfinite(float(global_window_cap)) else None,
                                         "effective_max_stake_ratio": round(float(effective_max_stake_ratio), 6),
+                                        "runtime_window_cap_ratio": round(float(runtime_window_cap_ratio), 6),
                                         "real_equity": round(float(real_equity), 4),
                                     })
                                     real_kelly_total = 0.0
