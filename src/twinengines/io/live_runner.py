@@ -132,7 +132,8 @@ class LiveRunner:
     _real_equity_cache_ts_ms: int = 0
     _platform_min_boost_used: set[str] = field(default_factory=set)
     _prob_history: dict[str, list[tuple[int, float, float]]] = field(default_factory=dict)  # window_id -> [(ts_ms, p_up, p_down)]
-    _gap_history: dict[str, list[tuple[int, float]]] = field(default_factory=dict)  # window_id -> [(ts_ms, ask_minus_p)]
+    _gap_history: dict[str, list[tuple[int, float]]] = field(default_factory=dict)  # key=window_id:dir -> [(ts_ms, ask_minus_p)]
+    _hedge_edge_history: dict[str, list[tuple[int, float]]] = field(default_factory=dict)  # key=window_id:dir -> [(ts_ms, p_minus_ask)]
 
     # ---------------- 工厂 ----------------
 
@@ -970,16 +971,6 @@ class LiveRunner:
             gate_ok = bool((p_ok and ask_ok and gap_ok) or hedge_edge_ok)
         else:
             gate_ok = bool(p_ok and ask_ok and gap_ok)
-
-        trade_intent = self._classify_trade_intent(
-            has_same_position=has_same_position,
-            has_opposite_position=has_opposite_position,
-        )
-
-        if trade_intent == "HEDGE":
-            gate_ok = bool((p_ok and ask_ok and gap_ok) or hedge_edge_ok)
-        else:
-            gate_ok = bool(p_ok and ask_ok and gap_ok)
         
         # unified gate is the only gate
         if not gate_ok:
@@ -987,7 +978,7 @@ class LiveRunner:
             if not p_ok:
                 reason.append(f"p={best_side_prob:.4f}≤0.5")
             if not ask_ok:
-                reason.append(f"ask={ask:.4f}≥0.8")
+                reason.append(f"ask={ask:.4f}≥0.7")
             if not gap_ok:
                 reason.append(f"gap={gap:.4f}≤0.02或近10s未持续")
             reason_str = "unified_gate_not_met: " + ", ".join(reason) if reason else "unified_gate_not_met"
