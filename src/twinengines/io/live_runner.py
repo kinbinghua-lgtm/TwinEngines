@@ -1076,8 +1076,8 @@ class LiveRunner:
                 "phase": phase,
                 "elapsed_sec": round(elapsed_sec, 2),
                 "trade_intent": trade_intent,
-                "intent_reason": lifecycle["reason"],
-                "lifecycle_phase_policy": lifecycle["phase_policy"],
+                "intent_reason": _SIM_CURRENT.get("intent_reason"),
+                "lifecycle_phase_policy": _SIM_CURRENT.get("lifecycle_phase_policy"),
                 "best_side_prob": round(best_side_prob, 6),
                 "ask": round(float(ask), 6) if ask is not None else None,
                 "best_ev": round(best_ev_simple, 6),
@@ -1311,7 +1311,7 @@ class LiveRunner:
                                         "real_min_share_exception": bool(_SIM_CURRENT.get("real_min_share_exception", False)),
                                         "real_min_share_exception_reason": _SIM_CURRENT.get("real_min_share_exception_reason"),
                                         "trade_intent": trade_intent,
-                                        "intent_reason": lifecycle["reason"],
+                                        "intent_reason": _SIM_CURRENT.get("intent_reason"),
                                     },
                                 )
                                 _SIM_CURRENT["real_status"] = "real_fok_evaluated"
