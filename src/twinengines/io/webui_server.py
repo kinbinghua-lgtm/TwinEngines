@@ -492,10 +492,10 @@ def summary_payload(root: Path) -> dict[str, Any]:
 def _web_phase_rule(phase_num):
     rules = {
         0: (0.50, 10, 0.20),
-        1: (0.50, 30, 0.20),
-        2: (0.50, 60, 0.20),
-        3: (0.50, 120, 0.20),
-        4: (0.50, 180, 0.20),
+        1: (0.50, 20, 0.20),
+        2: (0.50, 30, 0.20),
+        3: (0.50, 60, 0.20),
+        4: (0.50, 120, 0.20),
     }
     if not isinstance(phase_num, int):
         return rules[4]
@@ -513,10 +513,10 @@ def _phase_box_condition_subset(phase_num, all_conditions):
 def _phase_boxes_for_decision(phase_num, conditions):
     titles = {
         0: "p>0.50×10s / 净EV>0.20",
-        1: "p>0.50×30s / 净EV>0.20",
-        2: "p>0.50×60s / 净EV>0.20 + 序列两分钟一致",
-        3: "p>0.50×120s / 净EV>0.20 + 序列两分钟一致",
-        4: "p>0.50×180s / 净EV>0.20 + 序列两分钟一致",
+        1: "p>0.50×20s / 净EV>0.20",
+        2: "p>0.50×30s / 净EV>0.20 + 序列两分钟一致",
+        3: "p>0.50×60s / 净EV>0.20 + 序列两分钟一致",
+        4: "p>0.50×120s / 净EV>0.20 + 序列两分钟一致",
     }
     boxes = []
     current = phase_num if isinstance(phase_num, int) and 0 <= phase_num <= 4 else None
