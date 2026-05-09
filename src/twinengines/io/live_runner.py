@@ -726,6 +726,37 @@ class LiveRunner:
         global _SIM_FILLED, _SIM_CURRENT
         global _SIM_WIN_BUDGET, _SIM_WIN_DIR, _SIM_WIN_TARGET, _SIM_WIN_ENTRY_PROB, _SIM_WIN_LAST_PROB, _SIM_WIN_ENTRY_EV
         window_id = str(event.get("window_id") or "")
+
+        # window trace (A+B): minimal structured audit
+        now_ms = int(time.time() * 1000)
+        if not hasattr(self, "_window_trace"):  # runtime-only
+            self._window_trace = {}
+        if window_id:
+            st = self._window_trace.get(window_id)
+            if st is None:
+                ws = None
+                if window_id.startswith("w"):
+                    try:
+                        ws = int(window_id[1:])
+                    except Exception:
+                        ws = None
+                st = {
+                    "ws": ws,
+                    "first_ms": now_ms,
+                    "last_ms": now_ms,
+                    "last_heartbeat_ms": 0,
+                    "signal_count": 0,
+                }
+                self._window_trace[window_id] = st
+                if self.store is not None:
+                    self.store.append_audit("window_trace", {"event": "start", "window_id": window_id, "ws": ws, "ts_ms": now_ms})
+            else:
+                gap_ms = now_ms - int(st.get("last_ms") or now_ms)
+                if gap_ms > 8000 and self.store is not None:
+                    self.store.append_audit("window_trace", {"event": "gap", "window_id": window_id, "ts_ms": now_ms, "gap_ms": int(gap_ms), "last_ts_ms": int(st.get("last_ms") or 0)})
+            st["last_ms"] = now_ms
+            st["signal_count"] = int(st.get("signal_count") or 0) + 1
+
         # 真实盘是否活跃
         is_real_mode = (not self.cfg.dry_run_signals
                         and self.poly_client and self.market_resolver
@@ -746,7 +777,30 @@ class LiveRunner:
         phase_raw = event.get("phase", 3)
         phase = 3 if phase_raw is None else int(phase_raw)
         elapsed_sec = max(0.0, 300.0 - t_rem)
-        p_adj = max(p_up, p_down)
+
+        # heartbeat every 10s
+        if window_id and self.store is not None:
+            st = self._window_trace.get(window_id) if hasattr(self, "_window_trace") else None
+            if st is not None:
+                hb_ms = int(st.get("last_heartbeat_ms") or 0)
+                if now_ms - hb_ms >= 10_000:
+                    ws = st.get("ws")
+                    derived_elapsed = (now_ms - int(ws)) / 1000.0 if isinstance(ws, int) and ws > 0 else None
+                    self.store.append_audit("window_trace", {
+                        "event": "heartbeat",
+                        "window_id": window_id,
+                        "ts_ms": now_ms,
+                        "derived_elapsed_sec": round(float(derived_elapsed), 2) if derived_elapsed is not None else None,
+                        "event_elapsed_sec": round(float(elapsed_sec), 2),
+                        "phase": phase,
+                        "t_remaining_sec": round(float(t_rem), 2),
+                        "p_up": round(float(p_up), 6),
+                        "p_down": round(float(p_down), 6),
+                        "trigger_len": len(str(trig or "")),
+                        "signal_count": int(st.get("signal_count") or 0),
+                    })
+                    st["last_heartbeat_ms"] = now_ms
+
         d_abs = float(event.get("d_abs_pct") or 0)
         d_signed = float(event.get("d_signed_pct") or 0)
         best_prob_dir = "up" if p_up >= p_down else "down"
@@ -788,15 +842,22 @@ class LiveRunner:
         _SIM_CURRENT["seq_rule_window"] = seq_rule_window
         _SIM_CURRENT["seq_rule_a"] = seq_rule_a
         _SIM_CURRENT["seq_rule_b"] = seq_rule_b
-        if is_real_mode and window_id.startswith("w"):
-            try:
-                window_start_ms = int(window_id[1:])
-                startup_missed_sec = max(0.0, (int(self._started_at_ms or 0) - window_start_ms) / 1000.0)
-                if startup_missed_sec > float(getattr(self.cfg.runtime, "startup_observe_only_max_missed_sec", 8.0)):
-                    startup_observe_only = True
-                    self._startup_observe_only_windows.add(window_id)
-            except Exception:
-                startup_observe_only = False
+        if window_id:
+            # drop old windows from trace
+            for _k in list(getattr(self, "_window_trace", {}).keys()):
+                if _k != window_id:
+                    old = self._window_trace.pop(_k, None)
+                    if old and self.store is not None:
+                        try:
+                            self.store.append_audit("window_trace", {
+                                "event": "end",
+                                "window_id": _k,
+                                "ts_ms": now_ms,
+                                "signal_count": int(old.get("signal_count") or 0),
+                                "span_ms": int((old.get("last_ms") or now_ms) - (old.get("first_ms") or now_ms)),
+                            })
+                        except Exception:
+                            pass
 
         stale_decision_keys = (
             "best_dir", "best_side_prob", "best_edge", "best_ev", "best_ev_simple", "best_kelly_raw",
@@ -819,8 +880,6 @@ class LiveRunner:
             "real_min_share_exception", "real_min_share_exception_reason",
             "status", "fill_amt", "fill_ask", "fill_ev", "fill_edge", "fill_kelly_raw",
         )
-        for _stale_key in stale_decision_keys:
-            _SIM_CURRENT.pop(_stale_key, None)
 
         # 基础状态更新
         _SIM_CURRENT.update({"window_id": window_id, "prefix": trig, "T": round(t_rem, 0),
@@ -880,6 +939,28 @@ class LiveRunner:
             _SIM_CURRENT["p_confirm_ok"] = False
             _SIM_CURRENT["p_confirm_threshold"] = req_prob_none
             _SIM_CURRENT["candidate_filter_reason"] = f"phase{phase} needs p>{req_prob_none} to select a direction"
+            if window_id and self.store is not None:
+                try:
+                    st = self._window_trace.get(window_id) if hasattr(self, "_window_trace") else None
+                    ws = st.get("ws") if st else None
+                    derived_elapsed = (int(time.time() * 1000) - int(ws)) / 1000.0 if isinstance(ws, int) and ws > 0 else None
+                    self.store.append_audit("window_trace", {
+                        "event": "decision_snapshot",
+                        "window_id": window_id,
+                        "ts_ms": int(time.time() * 1000),
+                        "derived_elapsed_sec": round(float(derived_elapsed), 2) if derived_elapsed is not None else None,
+                        "phase": phase,
+                        "sec_in_window": int(elapsed_sec),
+                        "trade_intent": "NO_TRADE",
+                        "intent_allowed": False,
+                        "intent_reason": "no_direction_passed_candidate_filter",
+                        "seq_rule_required": bool(seq_rule_required),
+                        "seq_rule_ok": bool(seq_rule_ok),
+                        "best_dir": None,
+                        "best_side_prob": round(float(p_adj), 6),
+                    })
+                except Exception:
+                    pass
             self._write_current_window_snapshot()
             return
 

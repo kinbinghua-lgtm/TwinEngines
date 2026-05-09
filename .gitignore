@@ -22,7 +22,58 @@ dist/
 
 # 数据/缓存
 data/cache/
+data_cache/
+*.parquet
 *.parquet.tmp
+
+# Cursor/临时脚本与分析输出（不进 git）
+_cursor_temp_*
+_audit_*
+_analyze_*
+_check_*
+_deploy_*
+_diagnose_*
+_inspect_*
+_summarize_*
+_verify_*
+_wait_*
+_drawdown_*
+_recent_*
+_final_*
+_compact_*
+_compare_*
+_observe_*
+_platform_*
+_poly_*
+_stats_*
+_quick_*
+_restart_*
+_stop_*
+_start_*
+_cleanup_*
+_ast_*
+_cursor_*
+_vps_*
+_deep_*
+_emergency_*
+_targeted_*
+_test_*
+
+# 部署/训练脚本草稿
+train_direction_probability*.py
+deploy_*.ps1
+deploy_*.sh
+deploy_*.py
+deploy_*.bat
+test_vps_*.py
+_rebuild_*
+_update_*
+*.sh
+
+# 临时报告/草稿
+*_REPORT.md
+*_ANALYSIS.md
+*_SUMMARY.md
 
 # IDE
 .vscode/
