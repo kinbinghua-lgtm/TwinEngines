@@ -928,12 +928,12 @@ class LiveRunner:
             self._write_current_window_snapshot()
             return
 
-        # unified entry/add/hedge gate: p>0.50, ask<0.80, (ask-p)>0.04 in last 5s (allow 1 miss)
+        # unified entry/add/hedge gate: p>0.50, ask<0.80, (ask-p)>0.04 in last 10s (allow 1 miss)
         req_prob = 0.50
         req_ask_max = 0.80
         req_gap = 0.04
-        req_gap_sec = 5
-        allow_misses = 1
+        req_gap_sec = 10
+        allow_misses = 2
         gap = float(ask) - float(best_side_prob)
         self._record_gap_history(window_id, best_dir, gap=gap)
         gap_ok = self._is_gap_majority_above(window_id, best_dir, seconds=req_gap_sec, threshold=req_gap, allow_misses=allow_misses)
@@ -967,7 +967,7 @@ class LiveRunner:
             if not ask_ok:
                 reason.append(f"ask={ask:.4f}≥0.8")
             if not gap_ok:
-                reason.append(f"gap={gap:.4f}≤0.04或近5s未持续")
+                reason.append(f"gap={gap:.4f}≤0.04或近10s未持续")
             reason_str = "unified_gate_not_met: " + ", ".join(reason) if reason else "unified_gate_not_met"
             
             _SIM_CURRENT["best_dir"] = best_dir
