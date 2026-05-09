@@ -810,6 +810,7 @@ class LiveRunner:
             "seq_rule_required", "seq_rule_ok", "seq_rule_window", "seq_rule_a", "seq_rule_b",
             "real_status", "real_decision_stage", "real_block_reason", "real_skip_reason",
             "real_target_quote", "real_attempt_quote", "real_kelly_raw_quote", "real_platform_min_quote",
+            "real_window_ratio_cap", "real_hard_window_cap",
             "real_min_5_shares_quote", "real_min_order_quote", "real_limit_px", "real_window_cap",
             "real_min_abs_boost_available", "real_min_abs_boost_cap", "real_min_abs_boost_used", "real_min_funding_boost_key",
             "real_min_funding_boost_used_this_decision", "real_platform_min_boost_available",
@@ -1118,6 +1119,9 @@ class LiveRunner:
         max_price = ask * (1.0 + slippage_budget) if ask > 0 else ask
         depth_cap = min(ask_sz * max_price * 0.8, 200.0) if ask_sz > 0 and ask > 0 else 50.0
 
+        _SIM_CURRENT["real_window_ratio_cap"] = None
+        _SIM_CURRENT["real_hard_window_cap"] = None
+
         if not is_real_mode:
             _SIM_CURRENT["real_status"] = "real_mode_disabled"
             _SIM_CURRENT["real_decision_stage"] = "real_mode_disabled"
@@ -1243,6 +1247,8 @@ class LiveRunner:
                                     hard_window_cap = window_abs_cap
                                     _SIM_CURRENT["real_min_share_exception"] = True
                                     _SIM_CURRENT["real_min_share_exception_reason"] = "hedge" if has_opposite_position else "high_prob_price" if high_prob_min_share_exception else "min_funding_top_up" if platform_min_one_time_exception else None
+                                _SIM_CURRENT["real_window_ratio_cap"] = round(float(window_ratio_cap), 4) if math.isfinite(float(window_ratio_cap)) else None
+                                _SIM_CURRENT["real_hard_window_cap"] = round(float(hard_window_cap), 4) if math.isfinite(float(hard_window_cap)) else None
                                 if hard_window_cap < platform_min_quote:
                                     _SIM_CURRENT["real_status"] = "real_window_cap_below_platform_min"
                                     _SIM_CURRENT["real_decision_stage"] = "window_cap_check"
@@ -1255,11 +1261,16 @@ class LiveRunner:
                                             "reason": "window_cap_below_platform_min",
                                             "window_cap": round(float(hard_window_cap), 4),
                                             "platform_min_quote": round(platform_min_quote, 4),
+                                            "window_ratio_cap": round(float(window_ratio_cap), 4) if math.isfinite(float(window_ratio_cap)) else None,
+                                            "effective_max_stake_ratio": round(float(effective_max_stake_ratio), 6),
                                             **signal_meta,
                                         })
                                     _audit_real_decision("not_submitted", "window_cap_below_platform_min", {
                                         "window_cap": round(float(hard_window_cap), 4),
                                         "platform_min_quote": round(float(platform_min_quote), 4),
+                                        "window_ratio_cap": round(float(window_ratio_cap), 4) if math.isfinite(float(window_ratio_cap)) else None,
+                                        "effective_max_stake_ratio": round(float(effective_max_stake_ratio), 6),
+                                        "real_equity": round(float(real_equity), 4),
                                     })
                                     real_kelly_total = 0.0
                                 else:
