@@ -132,6 +132,7 @@ class LiveRunner:
     _real_equity_cache_ts_ms: int = 0
     _platform_min_boost_used: set[str] = field(default_factory=set)
     _prob_history: dict[str, list[tuple[int, float, float]]] = field(default_factory=dict)  # window_id -> [(ts_ms, p_up, p_down)]
+    _gap_history: dict[str, list[tuple[int, float]]] = field(default_factory=dict)  # window_id -> [(ts_ms, ask_minus_p)]
 
     # ---------------- 工厂 ----------------
 
@@ -726,37 +727,6 @@ class LiveRunner:
         global _SIM_FILLED, _SIM_CURRENT
         global _SIM_WIN_BUDGET, _SIM_WIN_DIR, _SIM_WIN_TARGET, _SIM_WIN_ENTRY_PROB, _SIM_WIN_LAST_PROB, _SIM_WIN_ENTRY_EV
         window_id = str(event.get("window_id") or "")
-
-        # window trace (A+B): minimal structured audit
-        now_ms = int(time.time() * 1000)
-        if not hasattr(self, "_window_trace"):  # runtime-only
-            self._window_trace = {}
-        if window_id:
-            st = self._window_trace.get(window_id)
-            if st is None:
-                ws = None
-                if window_id.startswith("w"):
-                    try:
-                        ws = int(window_id[1:])
-                    except Exception:
-                        ws = None
-                st = {
-                    "ws": ws,
-                    "first_ms": now_ms,
-                    "last_ms": now_ms,
-                    "last_heartbeat_ms": 0,
-                    "signal_count": 0,
-                }
-                self._window_trace[window_id] = st
-                if self.store is not None:
-                    self.store.append_audit("window_trace", {"event": "start", "window_id": window_id, "ws": ws, "ts_ms": now_ms})
-            else:
-                gap_ms = now_ms - int(st.get("last_ms") or now_ms)
-                if gap_ms > 8000 and self.store is not None:
-                    self.store.append_audit("window_trace", {"event": "gap", "window_id": window_id, "ts_ms": now_ms, "gap_ms": int(gap_ms), "last_ts_ms": int(st.get("last_ms") or 0)})
-            st["last_ms"] = now_ms
-            st["signal_count"] = int(st.get("signal_count") or 0) + 1
-
         # 真实盘是否活跃
         is_real_mode = (not self.cfg.dry_run_signals
                         and self.poly_client and self.market_resolver
@@ -777,30 +747,7 @@ class LiveRunner:
         phase_raw = event.get("phase", 3)
         phase = 3 if phase_raw is None else int(phase_raw)
         elapsed_sec = max(0.0, 300.0 - t_rem)
-
-        # heartbeat every 10s
-        if window_id and self.store is not None:
-            st = self._window_trace.get(window_id) if hasattr(self, "_window_trace") else None
-            if st is not None:
-                hb_ms = int(st.get("last_heartbeat_ms") or 0)
-                if now_ms - hb_ms >= 10_000:
-                    ws = st.get("ws")
-                    derived_elapsed = (now_ms - int(ws)) / 1000.0 if isinstance(ws, int) and ws > 0 else None
-                    self.store.append_audit("window_trace", {
-                        "event": "heartbeat",
-                        "window_id": window_id,
-                        "ts_ms": now_ms,
-                        "derived_elapsed_sec": round(float(derived_elapsed), 2) if derived_elapsed is not None else None,
-                        "event_elapsed_sec": round(float(elapsed_sec), 2),
-                        "phase": phase,
-                        "t_remaining_sec": round(float(t_rem), 2),
-                        "p_up": round(float(p_up), 6),
-                        "p_down": round(float(p_down), 6),
-                        "trigger_len": len(str(trig or "")),
-                        "signal_count": int(st.get("signal_count") or 0),
-                    })
-                    st["last_heartbeat_ms"] = now_ms
-
+        p_adj = max(p_up, p_down)
         d_abs = float(event.get("d_abs_pct") or 0)
         d_signed = float(event.get("d_signed_pct") or 0)
         best_prob_dir = "up" if p_up >= p_down else "down"
@@ -819,45 +766,15 @@ class LiveRunner:
         startup_observe_only = False
         startup_missed_sec = 0.0
 
-        seq_rule_required = phase >= 2
-        seq_rule_ok = True
-        seq_rule_window = ""
-        seq_rule_a = None
-        seq_rule_b = None
-        if seq_rule_required:
-            seq = str(trig or "")
-            sec_in_window = int(elapsed_sec)
-            idx = 0 if phase == 2 else 1 if phase == 3 else 2
-            if len(seq) >= idx + 2 and sec_in_window >= (idx + 2) * 60:
-                seq_rule_window = f"seq[{idx}] vs seq[{idx+1}]"
-                seq_rule_a = seq[idx]
-                seq_rule_b = seq[idx + 1]
-                seq_rule_ok = (seq_rule_a == seq_rule_b)
-            else:
-                seq_rule_window = f"need seq len>={idx+2} and elapsed_sec>={(idx+2)*60}"
-                seq_rule_ok = False
-
-        _SIM_CURRENT["seq_rule_required"] = bool(seq_rule_required)
-        _SIM_CURRENT["seq_rule_ok"] = bool(seq_rule_ok)
-        _SIM_CURRENT["seq_rule_window"] = seq_rule_window
-        _SIM_CURRENT["seq_rule_a"] = seq_rule_a
-        _SIM_CURRENT["seq_rule_b"] = seq_rule_b
-        if window_id:
-            # drop old windows from trace
-            for _k in list(getattr(self, "_window_trace", {}).keys()):
-                if _k != window_id:
-                    old = self._window_trace.pop(_k, None)
-                    if old and self.store is not None:
-                        try:
-                            self.store.append_audit("window_trace", {
-                                "event": "end",
-                                "window_id": _k,
-                                "ts_ms": now_ms,
-                                "signal_count": int(old.get("signal_count") or 0),
-                                "span_ms": int((old.get("last_ms") or now_ms) - (old.get("first_ms") or now_ms)),
-                            })
-                        except Exception:
-                            pass
+        if is_real_mode and window_id.startswith("w"):
+            try:
+                window_start_ms = int(window_id[1:])
+                startup_missed_sec = max(0.0, (int(self._started_at_ms or 0) - window_start_ms) / 1000.0)
+                if startup_missed_sec > float(getattr(self.cfg.runtime, "startup_observe_only_max_missed_sec", 8.0)):
+                    startup_observe_only = True
+                    self._startup_observe_only_windows.add(window_id)
+            except Exception:
+                startup_observe_only = False
 
         stale_decision_keys = (
             "best_dir", "best_side_prob", "best_edge", "best_ev", "best_ev_simple", "best_kelly_raw",
@@ -866,9 +783,7 @@ class LiveRunner:
             "is_hedge", "is_add", "is_value_entry", "is_trend_entry",
             "value_max_ask", "value_max_ask_exclusive", "trend_max_ask", "trend_max_ask_exclusive",
             "add_max_ask_exclusive", "high_price_min_ask", "p_rising_required_sec", "p_rising_5s", "p_rising_8s",
-            "p_confirm_required_sec", "p_confirm_ok", "p_confirm_threshold",
             "friction_adjusted_ev", "friction_multiplier",
-            "seq_rule_required", "seq_rule_ok", "seq_rule_window", "seq_rule_a", "seq_rule_b",
             "real_status", "real_decision_stage", "real_block_reason", "real_skip_reason",
             "real_target_quote", "real_attempt_quote", "real_kelly_raw_quote", "real_platform_min_quote",
             "real_window_ratio_cap", "real_hard_window_cap", "real_global_ratio_cap", "real_global_window_cap",
@@ -880,6 +795,8 @@ class LiveRunner:
             "real_min_share_exception", "real_min_share_exception_reason",
             "status", "fill_amt", "fill_ask", "fill_ev", "fill_edge", "fill_kelly_raw",
         )
+        for _stale_key in stale_decision_keys:
+            _SIM_CURRENT.pop(_stale_key, None)
 
         # 基础状态更新
         _SIM_CURRENT.update({"window_id": window_id, "prefix": trig, "T": round(t_rem, 0),
@@ -918,49 +835,64 @@ class LiveRunner:
             _SIM_CURRENT["up_prob_ok"] = (p_up > min_side_prob)
             _SIM_CURRENT["down_prob_ok"] = (p_down > min_side_prob)
 
+        # 预填两个方向的 EV（仅展示用）
         try:
-            best_dir, best_ev, ask_up, ask_down = self._resolve_best_direction_by_ev(event, window_id, phase=phase)
-        except:
-            _SIM_CURRENT["status"] = "EV err"; self._write_current_window_snapshot(); return
+            _, _, ask_up, ask_down = self._resolve_best_direction_by_ev(event, window_id, phase=phase)
+        except Exception:
+            ask_up, ask_down = None, None
+        _SIM_CURRENT["ask_up"] = ask_up
+        _SIM_CURRENT["ask_down"] = ask_down
+        if ask_up is not None and ask_down is not None:
+            ev_up_simple = self._calc_ev(p_up, ask_up)
+            ev_down_simple = self._calc_ev(p_down, ask_down)
+            edge_up = p_up - ask_up
+            edge_down = p_down - ask_down
+            gap_up = ask_up - p_up
+            gap_down = ask_down - p_down
+            kelly_up_raw = self._raw_kelly_ratio(p_up, ask_up)
+            kelly_down_raw = self._raw_kelly_ratio(p_down, ask_down)
+            _SIM_CURRENT["ev_up"] = round(ev_up_simple, 4)
+            _SIM_CURRENT["ev_down"] = round(ev_down_simple, 4)
+            _SIM_CURRENT["edge_up"] = round(edge_up, 4)
+            _SIM_CURRENT["edge_down"] = round(edge_down, 4)
+            _SIM_CURRENT["gap_up"] = round(gap_up, 4)
+            _SIM_CURRENT["gap_down"] = round(gap_down, 4)
+            _SIM_CURRENT["kelly_up_raw"] = round(kelly_up_raw, 4)
+            _SIM_CURRENT["kelly_down_raw"] = round(kelly_down_raw, 4)
+
+        # 方向选择：按报价（ask 更高且 >0.50），同价则不选
+        best_dir = None
+        if ask_up is not None and ask_down is not None:
+            if float(ask_up) > 0.50 and float(ask_down) > 0.50:
+                if float(ask_up) != float(ask_down):
+                    best_dir = "up" if float(ask_up) > float(ask_down) else "down"
+            elif float(ask_up) > 0.50:
+                best_dir = "up"
+            elif float(ask_down) > 0.50:
+                best_dir = "down"
 
         if best_dir is None:
             _SIM_CURRENT["status"] = "no_eligible_direction"
             _SIM_CURRENT["decision_pending"] = False
             _SIM_CURRENT["trade_intent"] = "NO_TRADE"
             _SIM_CURRENT["intent_allowed"] = False
-            _SIM_CURRENT["intent_reason"] = "no_direction_passed_candidate_filter"
-            _SIM_CURRENT["lifecycle_phase_policy"] = "candidate_filter"
-            req_prob_none, req_confirm_none, req_ev_none = self._phase_gate_rule(phase)
-            _SIM_CURRENT["req_prob"] = req_prob_none
-            _SIM_CURRENT["req_ev"] = req_ev_none
+            _SIM_CURRENT["intent_reason"] = "ask_not_above_0_50_or_ambiguous"
+            _SIM_CURRENT["lifecycle_phase_policy"] = "direction_by_ask"
+            _SIM_CURRENT["req_prob"] = 0.50
+            _SIM_CURRENT["req_ev"] = None
             _SIM_CURRENT["trend_max_ask_exclusive"] = 0.80
             _SIM_CURRENT["friction_multiplier"] = 1.005
-            _SIM_CURRENT["p_confirm_required_sec"] = req_confirm_none
-            _SIM_CURRENT["p_confirm_ok"] = False
-            _SIM_CURRENT["p_confirm_threshold"] = req_prob_none
-            _SIM_CURRENT["candidate_filter_reason"] = f"phase{phase} needs p>{req_prob_none} to select a direction"
-            if window_id and self.store is not None:
-                try:
-                    st = self._window_trace.get(window_id) if hasattr(self, "_window_trace") else None
-                    ws = st.get("ws") if st else None
-                    derived_elapsed = (int(time.time() * 1000) - int(ws)) / 1000.0 if isinstance(ws, int) and ws > 0 else None
-                    self.store.append_audit("window_trace", {
-                        "event": "decision_snapshot",
-                        "window_id": window_id,
-                        "ts_ms": int(time.time() * 1000),
-                        "derived_elapsed_sec": round(float(derived_elapsed), 2) if derived_elapsed is not None else None,
-                        "phase": phase,
-                        "sec_in_window": int(elapsed_sec),
-                        "trade_intent": "NO_TRADE",
-                        "intent_allowed": False,
-                        "intent_reason": "no_direction_passed_candidate_filter",
-                        "seq_rule_required": bool(seq_rule_required),
-                        "seq_rule_ok": bool(seq_rule_ok),
-                        "best_dir": None,
-                        "best_side_prob": round(float(p_adj), 6),
-                    })
-                except Exception:
-                    pass
+            self._write_current_window_snapshot()
+            return
+
+        if best_dir == "up":
+            ask = ask_up
+            best_side_prob = float(p_up)
+        else:
+            ask = ask_down
+            best_side_prob = float(p_down)
+        if ask is None:
+            _SIM_CURRENT["status"] = "ask_unavailable"
             self._write_current_window_snapshot()
             return
 
@@ -980,8 +912,6 @@ class LiveRunner:
                 meta.update(extra)
             self._write_sim_record(window_id, trig, p_adj, best_side_prob, t_rem, ask_up, ask_down, best_dir, best_ev_simple, fill_amt, status, reason, d_abs, meta=meta)
 
-        best_side_prob = p_up if best_dir == "up" else p_down
-        ask = ask_up if best_dir == "up" else ask_down
         best_edge = best_side_prob - ask
         best_ev_simple = self._calc_ev(best_side_prob, ask)
         best_kelly_raw = self._raw_kelly_ratio(best_side_prob, ask)
@@ -1020,9 +950,32 @@ class LiveRunner:
             self._write_current_window_snapshot()
             return
 
-        # 5-minute lifecycle strategy: classify intent first, then apply phase-aware policy.
-        phase_req_prob, phase_confirm_sec, phase_req_net_ev = self._phase_gate_rule(phase)
-        p_confirm_ok = self._is_probability_above(window_id, best_dir, seconds=phase_confirm_sec, threshold=phase_req_prob)
+        # unified entry/add/hedge gate: p>0.50, ask<0.80, (ask-p)>0.04 in last 5s (allow 1 miss)
+        req_prob = 0.50
+        req_ask_max = 0.80
+        req_gap = 0.04
+        req_gap_sec = 5
+        allow_misses = 1
+        gap = float(ask) - float(best_side_prob)
+        self._record_gap_history(window_id, gap=gap)
+        gap_ok = self._is_gap_majority_above(window_id, seconds=req_gap_sec, threshold=req_gap, allow_misses=allow_misses)
+        p_ok = float(best_side_prob) > req_prob
+        ask_ok = float(ask) < req_ask_max
+        gate_ok = bool(p_ok and ask_ok and gap_ok)
+
+        _SIM_CURRENT["best_dir"] = best_dir
+        _SIM_CURRENT["best_side_prob"] = round(float(best_side_prob), 4)
+        _SIM_CURRENT["ask"] = round(float(ask), 6)
+        _SIM_CURRENT["gap"] = round(float(gap), 6)
+        _SIM_CURRENT["req_prob"] = req_prob
+        _SIM_CURRENT["req_ask_max"] = req_ask_max
+        _SIM_CURRENT["req_gap"] = req_gap
+        _SIM_CURRENT["req_gap_sec"] = req_gap_sec
+        _SIM_CURRENT["gap_ok"] = bool(gap_ok)
+        _SIM_CURRENT["p_ok"] = bool(p_ok)
+        _SIM_CURRENT["ask_ok"] = bool(ask_ok)
+
+        # keep intent classification but gate is unified
         lifecycle = self._evaluate_lifecycle_intent_gate(
             phase=phase,
             p_side=best_side_prob,
@@ -1032,10 +985,16 @@ class LiveRunner:
             kelly_raw=best_kelly_raw,
             has_same_position=has_same_position,
             has_opposite_position=has_opposite_position,
-            p_confirm_ok=p_confirm_ok,
-            p_confirm_sec=phase_confirm_sec,
+            p_confirm_ok=True,
+            p_confirm_sec=0,
         )
         trade_intent = str(lifecycle["trade_intent"])
+        lifecycle["allowed"] = bool(lifecycle.get("allowed")) and gate_ok
+        if not gate_ok and bool(lifecycle.get("allowed")):
+            lifecycle["allowed"] = False
+            lifecycle["reason"] = "unified_gate_not_met"
+            lifecycle["phase_policy"] = "unified_gate"
+
         req_edge = float(lifecycle["req_edge"])
         req_ev = float(lifecycle["req_ev"])
         req_kelly_raw = float(lifecycle["req_kelly_raw"])
@@ -1100,18 +1059,6 @@ class LiveRunner:
             reason = str(lifecycle["reason"])
             _SIM_CURRENT["status"] = reason
             _record_decision(0, "rejected", reason, dict(lifecycle.get("meta") or {}))
-            self._write_current_window_snapshot()
-            return
-
-        if seq_rule_required and not seq_rule_ok:
-            _SIM_CURRENT["status"] = "seq_rule_not_met"
-            _record_decision(0, "rejected", "seq_rule_not_met", {
-                "seq_rule_required": True,
-                "seq_rule_ok": False,
-                "seq_rule_window": seq_rule_window,
-                "seq_rule_a": seq_rule_a,
-                "seq_rule_b": seq_rule_b,
-            })
             self._write_current_window_snapshot()
             return
 
@@ -1940,6 +1887,31 @@ class LiveRunner:
         for key in list(self._prob_history.keys()):
             if key != str(window_id):
                 self._prob_history.pop(key, None)
+
+    def _record_gap_history(self, window_id: str, *, gap: float) -> None:
+        if not window_id:
+            return
+        now_ms = int(time.time() * 1000)
+        hist = self._gap_history.setdefault(str(window_id), [])
+        hist.append((now_ms, float(gap)))
+        cutoff = now_ms - 20_000
+        self._gap_history[str(window_id)] = [x for x in hist if int(x[0]) >= cutoff]
+        for key in list(self._gap_history.keys()):
+            if key != str(window_id):
+                self._gap_history.pop(key, None)
+
+    def _is_gap_majority_above(self, window_id: str, *, seconds: int, threshold: float, allow_misses: int = 1) -> bool:
+        hist = self._gap_history.get(str(window_id)) or []
+        required = max(1, int(seconds))
+        if len(hist) < required:
+            return False
+        now_ms = int(time.time() * 1000)
+        recent = [x for x in hist if int(x[0]) >= now_ms - required * 1000]
+        if len(recent) < required:
+            return False
+        vals = [float(x[1]) for x in recent[-required:]]
+        misses = sum(1 for v in vals if v <= float(threshold))
+        return misses <= int(allow_misses)
 
     def _is_probability_above(self, window_id: str, direction: str, *, seconds: int, threshold: float) -> bool:
         hist = self._prob_history.get(str(window_id)) or []

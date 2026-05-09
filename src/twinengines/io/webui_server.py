@@ -503,7 +503,7 @@ def _web_phase_rule(phase_num):
 
 
 def _phase_box_condition_subset(phase_num, all_conditions):
-    keys_by_phase = {0: {"intent", "prob", "ask_rule", "confirm", "ev"}, 1: {"intent", "prob", "ask_rule", "confirm", "ev"}, 2: {"intent", "prob", "ask_rule", "confirm", "seq_rule", "ev"}, 3: {"intent", "prob", "ask_rule", "confirm", "seq_rule", "ev"}, 4: {"intent", "prob", "ask_rule", "confirm", "seq_rule", "ev"}}
+    keys_by_phase = {0: {"intent", "prob", "ask_rule", "gap_rule"}, 1: {"intent", "prob", "ask_rule", "gap_rule"}, 2: {"intent", "prob", "ask_rule", "gap_rule"}, 3: {"intent", "prob", "ask_rule", "gap_rule"}, 4: {"intent", "prob", "ask_rule", "gap_rule"}}
     if not isinstance(phase_num, int):
         return []
     keys = keys_by_phase.get(phase_num, set())
@@ -595,8 +595,9 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
             c("service", "策略服务是否运行", "pass", "systemd twinengines-strategy active"),
             c("stage", "当前阶段", "warn" if action == "waiting_minute3_close" else "pass", reason),
             c("quote", "盘口报价", "pass" if best_ask is not None else "fail", f"side={side.upper() if side else '--'} best_bid={best_bid if best_bid is not None else '--'} best_ask={best_ask if best_ask is not None else '--'}"),
-            c("confidence", "方向置信度", "pass" if confidence is not None and confidence >= 0.51 else "fail" if confidence is not None else "unknown", f"p_up={p_up if p_up is not None else '--'} p_down={p_down if p_down is not None else '--'} confidence={confidence if confidence is not None else '--'} 阈值=0.51"),
-            c("edge", "EV/edge", "pass" if edge is not None and edge >= 0.08 else "fail" if edge is not None else "unknown", f"fair={fair if fair is not None else '--'} edge={edge if edge is not None else '--'} 需要>=0.08"),
+            c("prob", "概率方向", "pass" if confidence is not None and confidence >= 0.51 else "fail" if confidence is not None else "unknown", f"p_up={p_up if p_up is not None else '--'} p_down={p_down if p_down is not None else '--'} confidence={confidence if confidence is not None else '--'} 阈值=0.51"),
+            c("ask_rule", "报价上限", "pass" if best_ask is not None and best_ask < 0.8 else "fail" if best_ask is not None else "unknown", f"best_ask={best_ask if best_ask is not None else '--'} < 0.8"),
+            c("gap_rule", "市场强化(ask-p)", "pass" if (edge is not None and edge <= -0.04) else "fail" if edge is not None else "unknown", f"(ask-p)={(-edge) if edge is not None else '--'} > 0.04（naked tick 使用 edge=p-ask 的相反数）"),
         ]
         return {"ok": True, "window_id": window_id, "window_label": window_label(window_id), "seq": seq, "seq_display": seq_display, "seq_total": seq_total, "prefix": seq, "T_remaining": T, "server_ts_ms": int(time.time() * 1000), "p_up": p_up, "p_down": p_down, "ev_up": edge if best_dir == "up" else None, "ev_down": edge if best_dir == "down" else None, "best_dir": best_dir, "best_dir_label": best_dir.upper() if best_dir else "未确定", "decision_mode": zh_strategy_name("naked-third-digit-live"), "evaluated_direction": best_dir, "evaluated_direction_label": best_dir.upper() if best_dir else "未确定", "evaluated_ask": best_ask, "evaluated_bid": best_bid, "ask_up": best_ask if best_dir == "up" else None, "ask_down": best_ask if best_dir == "down" else None, "bid_up": best_bid if best_dir == "up" else None, "bid_down": best_bid if best_dir == "down" else None, "fair_prob_side": fair, "best_ev": edge, "phase_boxes": _phase_boxes_for_decision(None, real), "real": {"status": real_status, "reason": reason, "target_quote": safe_float(tick.get("target_quote_usdc")), "target_shares": None, "filled_order": None, "conditions": real}, "shadow": {"status": "等待" if action == "waiting_minute3_close" else "同步实盘 tick", "reason": reason, "fill_amount": None, "ev": edge, "equity": sm.get("shadow_equity_usdc"), "conditions": []}, "source": "logs/naked_live_ticks.jsonl"}
     cw = read_json(root / "data_runtime" / "current_window.json") or {}; sm = summary_payload(root); wid = str(cw.get("window_id") or "")
@@ -623,6 +624,11 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     friction_adjusted_ev = safe_float(cw.get("friction_adjusted_ev"))
     best_edge = safe_float(cw.get("best_edge") or (best_prob - ask if best_prob is not None and ask is not None else None))
     best_kelly = safe_float(cw.get("best_kelly_raw"))
+    req_ask_max = safe_float(cw.get("req_ask_max"))
+    req_gap = safe_float(cw.get("req_gap"))
+    req_gap_sec = safe_float(cw.get("req_gap_sec"))
+    gap_ok = cw.get("gap_ok")
+    gap = safe_float(cw.get("gap"))
     trade_intent = str(cw.get("trade_intent") or "--")
     intent_reason = str(cw.get("intent_reason") or cw.get("reason") or "--")
     phase = cw.get("phase")
@@ -646,12 +652,8 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     ]
     if decision_pending:
         direction_text = "等待完整决策快照"
-    elif trade_intent == "ENTRY_VALUE":
-        direction_text = "五阶段通道：按本阶段连续p、ask<0.8、扣摩擦后EV判断"
-    elif trade_intent in ("ENTRY_TREND", "HEDGE"):
-        direction_text = "五阶段通道：按本阶段连续p、ask<0.8、扣摩擦后EV判断"
-    elif trade_intent == "ADD":
-        direction_text = "ADD通道：已有同向仓位，按当前方向补仓规则判断"
+    elif trade_intent in ("ENTRY_VALUE", "ENTRY_TREND", "HEDGE", "ADD"):
+        direction_text = "统一门槛：p>0.5 且 ask<0.8 且 (ask-p)>0.04 持续5秒（允许1次抖动）"
     else:
         direction_text = "当前无可交易通道"
     if not decision_pending:
@@ -659,23 +661,19 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
         real.append(c("intent", "阶段门控", "pass" if intent_allowed is True else "fail" if intent_allowed is False else "unknown", f"{intent_reason}"))
     phase_rule_prob, phase_rule_confirm_sec, phase_rule_ev = _web_phase_rule(phase_num)
     if not decision_pending and phase_num is not None:
-        real.append(c("prob", "概率", "pass" if best_prob is not None and best_prob > phase_rule_prob else "fail" if best_prob is not None else "unknown", f"当前={best_prob if best_prob is not None else '--'}；要求 > {phase_rule_prob}"))
+        real.append(c("prob", "概率", "pass" if best_prob is not None and best_prob > 0.5 else "fail" if best_prob is not None else "unknown", f"当前={best_prob if best_prob is not None else '--'}；要求 > 0.5"))
     ask_checks = []
-    if cw.get('value_max_ask') is not None:
-        ask_checks.append(("value_max", "<=", float(cw.get('value_max_ask'))))
-    if cw.get('value_max_ask_exclusive') is not None:
-        ask_checks.append(("value_max_excl", "<", float(cw.get('value_max_ask_exclusive'))))
-    if cw.get('trend_max_ask') is not None:
-        ask_checks.append(("trend_max", "<=", float(cw.get('trend_max_ask'))))
-    if cw.get('trend_max_ask_exclusive') is not None:
-        ask_checks.append(("trend_max_excl", "<", float(cw.get('trend_max_ask_exclusive'))))
-    elif phase_num is not None:
-        ask_checks.append(("max_ask", "<", 0.80))
-    if cw.get('add_max_ask_exclusive') is not None:
-        ask_checks.append(("add_max_excl", "<", float(cw.get('add_max_ask_exclusive'))))
+    ask_checks.append(("max_ask", "<", 0.80))
     if not decision_pending and ask_checks:
         ask_ok = ask is not None and all((ask <= v if op == "<=" else ask < v) for _, op, v in ask_checks)
         ask_text = "；".join(f"{name} {op} {v}" for name, op, v in ask_checks)
+        real.append(c("ask_rule", "报价规则", "pass" if ask_ok else "fail" if ask is not None else "unknown", f"ask={ask if ask is not None else '--'}；要求 {ask_text}"))
+
+    if not decision_pending and best_dir and gap is not None:
+        gpass = (gap_ok is True) if (gap_ok is not None) else (gap > 0.04)
+        gtext = f"ask-p={gap if gap is not None else '--'}；要求 > 0.04；近5s允许1次抖动"
+        real.append(c("gap_rule", "市场强化(ask-p)", "pass" if gpass else "fail", gtext))
+
         real.append(c("ask_rule", "价格", "pass" if ask_ok else "fail" if ask is not None else "unknown", f"当前ask={ask if ask is not None else '--'}；{ask_text}"))
     required_confirm = safe_float(cw.get('p_confirm_required_sec')) or phase_rule_confirm_sec
     if not decision_pending and required_confirm is not None and required_confirm > 0:
@@ -719,7 +717,14 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     else:
         reason = f"未提交：{fail['label']}未通过" if fail else f"未提交：{real_status}"
     fill = safe_float(cw.get("fill_amt") or cw.get("fill_amount")); shadow_status = str(cw.get("status") or "等待")
-    shadow = [c("time","时间条件","pass" if T is not None and T >= 15 else "fail", f"T={T:.0f}s >= 15s" if T is not None else "无数据"), c("intent","阶段-意图门控", "pass" if intent_allowed is True else "fail" if intent_allowed is False else "unknown", f"{intent_reason}"), c("ev","动态 EV 条件","pass" if req_ev is not None and ev is not None and ev >= req_ev else "fail" if req_ev is not None and ev is not None else "unknown", f"EV={ev if ev is not None else '--'}，当前要求={req_ev if req_ev is not None else '--'}"), c("kelly","模拟 Kelly 条件","pass" if fill and fill >= 2.5 else "warn", f"影子 fill={fill if fill is not None else '--'}")]
+    shadow = [
+        c("time", "时间条件", "pass" if T is not None and T >= 15 else "fail", f"T={T:.0f}s >= 15s" if T is not None else "无数据"),
+        c("intent", "意图门控", "pass" if intent_allowed is True else "fail" if intent_allowed is False else "unknown", f"{intent_reason}"),
+        c("prob", "概率方向", "pass" if best_prob is not None and best_prob > 0.5 else "fail" if best_prob is not None else "unknown", f"p={best_prob if best_prob is not None else '--'} > 0.5"),
+        c("ask_rule", "报价上限", "pass" if ask is not None and ask < 0.8 else "fail" if ask is not None else "unknown", f"ask={ask if ask is not None else '--'} < 0.8"),
+        c("gap_rule", "市场强化(ask-p)", "pass" if (cw.get('gap_ok') is True) else "fail" if (cw.get('gap_ok') is False) else "unknown", f"ask-p={cw.get('gap') if cw.get('gap') is not None else '--'} > 0.04 近5s允许1次抖动"),
+        c("kelly", "模拟 Kelly 条件", "pass" if fill and fill >= 2.5 else "warn", f"影子 fill={fill if fill is not None else '--'}"),
+    ]
     return {"ok": True, "window_id": wid, "window_label": window_label(wid), "seq": seq, "seq_display": seq_display, "seq_total": seq_total, "prefix": seq, "T_remaining": T, "server_ts_ms": int(time.time() * 1000), "p_up": p_up, "p_down": p_down, "ev_up": ev_up, "ev_down": ev_down, "best_dir": best_dir, "best_dir_label": dir_label, "decision_mode": "方向概率", "evaluated_direction": best_dir, "evaluated_direction_label": dir_label, "evaluated_ask": ask, "ask_up": ask_up, "ask_down": ask_down, "best_ev": ev, "phase_boxes": _phase_boxes_for_decision(phase_num, _phase_box_condition_subset(phase_num, real)), "common_conditions": [x for x in real if x.get("key") in {"time", "startup", "book"}], "real": {"status": real_status, "reason": reason, "target_quote": real_target, "target_shares": shares, "filled_order": filled, "conditions": real}, "shadow": {"status": shadow_status, "reason": str(cw.get("reason") or shadow_status), "fill_amount": fill, "ev": ev, "equity": sm.get("shadow_equity_usdc"), "conditions": shadow}, "source": "current_window.json + derived"}
 
 
