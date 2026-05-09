@@ -813,31 +813,9 @@ class LiveRunner:
         if not window_id or t_rem < min_entry_t_rem:
             _SIM_CURRENT["status"] = f"T<{min_entry_t_rem:.0f}s"; self._write_current_window_snapshot(); return
 
-        # 预填两个方向的 EV
+        # 获取两个方向的市场报价
         try:
-            _, _, ask_up, ask_down = self._resolve_best_direction_by_ev(event, window_id, phase=phase)
-        except:
-            ask_up, ask_down = None, None
-        _SIM_CURRENT["ask_up"] = ask_up; _SIM_CURRENT["ask_down"] = ask_down
-        if ask_up is not None and ask_down is not None:
-            ev_up_simple = self._calc_ev(p_up, ask_up)
-            ev_down_simple = self._calc_ev(p_down, ask_down)
-            edge_up = p_up - ask_up
-            edge_down = p_down - ask_down
-            kelly_up_raw = self._raw_kelly_ratio(p_up, ask_up)
-            kelly_down_raw = self._raw_kelly_ratio(p_down, ask_down)
-            _SIM_CURRENT["ev_up"] = round(ev_up_simple, 4)
-            _SIM_CURRENT["ev_down"] = round(ev_down_simple, 4)
-            _SIM_CURRENT["edge_up"] = round(edge_up, 4)
-            _SIM_CURRENT["edge_down"] = round(edge_down, 4)
-            _SIM_CURRENT["kelly_up_raw"] = round(kelly_up_raw, 4)
-            _SIM_CURRENT["kelly_down_raw"] = round(kelly_down_raw, 4)
-            _SIM_CURRENT["up_prob_ok"] = (p_up > min_side_prob)
-            _SIM_CURRENT["down_prob_ok"] = (p_down > min_side_prob)
-
-        # 预填两个方向的 EV（仅展示用）
-        try:
-            _, _, ask_up, ask_down = self._resolve_best_direction_by_ev(event, window_id, phase=phase)
+            ask_up, ask_down = self._resolve_market_quotes(event, window_id)
         except Exception:
             ask_up, ask_down = None, None
         _SIM_CURRENT["ask_up"] = ask_up
@@ -957,8 +935,8 @@ class LiveRunner:
         req_gap_sec = 5
         allow_misses = 1
         gap = float(ask) - float(best_side_prob)
-        self._record_gap_history(window_id, gap=gap)
-        gap_ok = self._is_gap_majority_above(window_id, seconds=req_gap_sec, threshold=req_gap, allow_misses=allow_misses)
+        self._record_gap_history(window_id, best_dir, gap=gap)
+        gap_ok = self._is_gap_majority_above(window_id, best_dir, seconds=req_gap_sec, threshold=req_gap, allow_misses=allow_misses)
         p_ok = float(best_side_prob) > req_prob
         ask_ok = float(ask) < req_ask_max
         gate_ok = bool(p_ok and ask_ok and gap_ok)
@@ -975,30 +953,47 @@ class LiveRunner:
         _SIM_CURRENT["p_ok"] = bool(p_ok)
         _SIM_CURRENT["ask_ok"] = bool(ask_ok)
 
-        # keep intent classification but gate is unified
-        lifecycle = self._evaluate_lifecycle_intent_gate(
-            phase=phase,
-            p_side=best_side_prob,
-            ask=ask,
-            edge=best_edge,
-            ev=best_ev_simple,
-            kelly_raw=best_kelly_raw,
+        # classify trade intent (no gate logic here)
+        trade_intent = self._classify_trade_intent(
             has_same_position=has_same_position,
             has_opposite_position=has_opposite_position,
-            p_confirm_ok=True,
-            p_confirm_sec=0,
         )
-        trade_intent = str(lifecycle["trade_intent"])
-        lifecycle["allowed"] = bool(lifecycle.get("allowed")) and gate_ok
-        if not gate_ok and bool(lifecycle.get("allowed")):
-            lifecycle["allowed"] = False
-            lifecycle["reason"] = "unified_gate_not_met"
-            lifecycle["phase_policy"] = "unified_gate"
+        
+        # unified gate is the only gate
+        if not gate_ok:
+            reason = []
+            if not p_ok:
+                reason.append(f"p={best_side_prob:.4f}≤0.5")
+            if not ask_ok:
+                reason.append(f"ask={ask:.4f}≥0.8")
+            if not gap_ok:
+                reason.append(f"gap={gap:.4f}≤0.04或近5s未持续")
+            reason_str = "unified_gate_not_met: " + ", ".join(reason) if reason else "unified_gate_not_met"
+            
+            _SIM_CURRENT["best_dir"] = best_dir
+            _SIM_CURRENT["best_side_prob"] = round(best_side_prob, 4)
+            _SIM_CURRENT["best_edge"] = round(best_edge, 4)
+            _SIM_CURRENT["best_ev"] = round(best_ev_simple, 4)
+            _SIM_CURRENT["best_ev_simple"] = round(best_ev_simple, 4)
+            _SIM_CURRENT["best_kelly_raw"] = round(best_kelly_raw, 4)
+            _SIM_CURRENT["trade_intent"] = trade_intent
+            _SIM_CURRENT["intent_allowed"] = False
+            _SIM_CURRENT["intent_reason"] = reason_str
+            _SIM_CURRENT["lifecycle_phase_policy"] = "unified_gate"
+            _SIM_CURRENT["status"] = reason_str
+            _SIM_CURRENT["decision_pending"] = False
+            _SIM_CURRENT["req_prob"] = req_prob
+            _SIM_CURRENT["req_edge"] = -1.0
+            _SIM_CURRENT["req_ev"] = -1.0
+            _SIM_CURRENT["req_kelly_raw"] = 0.0
+            _record_decision(0, "rejected", reason_str)
+            self._write_current_window_snapshot()
+            return
 
-        req_edge = float(lifecycle["req_edge"])
-        req_ev = float(lifecycle["req_ev"])
-        req_kelly_raw = float(lifecycle["req_kelly_raw"])
-        req_prob = float(lifecycle["req_prob"])
+        # gate passed, intent allowed
+        req_edge = -1.0
+        req_ev = -1.0
+        req_kelly_raw = 0.0
 
         _SIM_CURRENT["best_dir"] = best_dir
         _SIM_CURRENT["best_side_prob"] = round(best_side_prob, 4)
@@ -1011,32 +1006,10 @@ class LiveRunner:
         _SIM_CURRENT["req_ev"] = round(req_ev, 4)
         _SIM_CURRENT["req_kelly_raw"] = round(req_kelly_raw, 4)
         _SIM_CURRENT["trade_intent"] = trade_intent
-        _SIM_CURRENT["intent_allowed"] = bool(lifecycle["allowed"])
-        _SIM_CURRENT["intent_reason"] = lifecycle["reason"]
-        _SIM_CURRENT["lifecycle_phase_policy"] = lifecycle["phase_policy"]
+        _SIM_CURRENT["intent_allowed"] = True
+        _SIM_CURRENT["intent_reason"] = f"unified_gate_passed_{trade_intent.lower()}"
+        _SIM_CURRENT["lifecycle_phase_policy"] = "unified_gate"
         _SIM_CURRENT["decision_pending"] = False
-        for _stale_lifecycle_key in (
-            "value_max_ask",
-            "value_max_ask_exclusive",
-            "trend_max_ask",
-            "trend_max_ask_exclusive",
-            "add_max_ask_exclusive",
-            "high_price_min_ask",
-            "p_rising_required_sec",
-            "p_rising_5s",
-            "p_rising_8s",
-            "p_confirm_required_sec",
-            "p_confirm_ok",
-            "p_confirm_threshold",
-            "friction_adjusted_ev",
-            "friction_multiplier",
-        ):
-            _SIM_CURRENT.pop(_stale_lifecycle_key, None)
-        _SIM_CURRENT.update(dict(lifecycle.get("meta") or {}))
-        _SIM_CURRENT["is_hedge"] = trade_intent == "HEDGE"
-        _SIM_CURRENT["is_add"] = trade_intent == "ADD"
-        _SIM_CURRENT["is_value_entry"] = trade_intent == "ENTRY_VALUE"
-        _SIM_CURRENT["is_trend_entry"] = trade_intent == "ENTRY_TREND"
         signal_meta.update({
             "req_prob": round(req_prob, 4),
             "req_edge": round(req_edge, 4),
@@ -1045,22 +1018,14 @@ class LiveRunner:
             "best_edge": round(best_edge, 4),
             "best_kelly_raw": round(best_kelly_raw, 4),
             "trade_intent": trade_intent,
-            "intent_allowed": bool(lifecycle["allowed"]),
-            "intent_reason": lifecycle["reason"],
-            "lifecycle_phase_policy": lifecycle["phase_policy"],
+            "intent_allowed": True,
+            "intent_reason": f"unified_gate_passed_{trade_intent.lower()}",
+            "lifecycle_phase_policy": "unified_gate",
             "is_hedge": trade_intent == "HEDGE",
             "is_add": trade_intent == "ADD",
-            "is_value_entry": trade_intent == "ENTRY_VALUE",
-            "is_trend_entry": trade_intent == "ENTRY_TREND",
-            **dict(lifecycle.get("meta") or {}),
+            "is_value_entry": False,
+            "is_trend_entry": False,
         })
-
-        if not bool(lifecycle["allowed"]):
-            reason = str(lifecycle["reason"])
-            _SIM_CURRENT["status"] = reason
-            _record_decision(0, "rejected", reason, dict(lifecycle.get("meta") or {}))
-            self._write_current_window_snapshot()
-            return
 
         sizing_fraction, max_stake_ratio, sizing_tier = self._direction_sizing_profile(
             p_side=best_side_prob,
@@ -1888,20 +1853,24 @@ class LiveRunner:
             if key != str(window_id):
                 self._prob_history.pop(key, None)
 
-    def _record_gap_history(self, window_id: str, *, gap: float) -> None:
-        if not window_id:
+    def _record_gap_history(self, window_id: str, best_dir: str, *, gap: float) -> None:
+        if not window_id or not best_dir:
             return
+        gap_key = f"{window_id}:{best_dir}"
         now_ms = int(time.time() * 1000)
-        hist = self._gap_history.setdefault(str(window_id), [])
+        hist = self._gap_history.setdefault(gap_key, [])
         hist.append((now_ms, float(gap)))
         cutoff = now_ms - 20_000
-        self._gap_history[str(window_id)] = [x for x in hist if int(x[0]) >= cutoff]
+        self._gap_history[gap_key] = [x for x in hist if int(x[0]) >= cutoff]
         for key in list(self._gap_history.keys()):
-            if key != str(window_id):
+            if not key.startswith(f"{window_id}:"):
                 self._gap_history.pop(key, None)
 
-    def _is_gap_majority_above(self, window_id: str, *, seconds: int, threshold: float, allow_misses: int = 1) -> bool:
-        hist = self._gap_history.get(str(window_id)) or []
+    def _is_gap_majority_above(self, window_id: str, best_dir: str, *, seconds: int, threshold: float, allow_misses: int = 1) -> bool:
+        if not window_id or not best_dir:
+            return False
+        gap_key = f"{window_id}:{best_dir}"
+        hist = self._gap_history.get(gap_key) or []
         required = max(1, int(seconds))
         if len(hist) < required:
             return False
@@ -2185,7 +2154,33 @@ class LiveRunner:
             return 0.28, 0.14, "phase3_strong"
         return 0.20, 0.10, "phase3_base"
 
-    def _resolve_best_direction_by_ev(self, event: dict, window_id: str, *, phase: int = 3):
+    def _classify_trade_intent(
+        self,
+        *,
+        has_same_position: bool,
+        has_opposite_position: bool,
+    ) -> str:
+        """Classify trade intent based on position state only (no gate logic)."""
+        if has_opposite_position:
+            return "HEDGE"
+        if has_same_position:
+            return "ADD"
+        return "ENTRY"
+
+    def _resolve_market_quotes(self, event: dict, window_id: str) -> tuple[Optional[float], Optional[float]]:
+        """Fetch market quotes for both directions."""
+        if self.poly_client is None or self.market_resolver is None:
+            return None, None
+        active = self.market_resolver.get_active()
+        if active is None:
+            return None, None
+        book_up = self.poly_client.fetch_book(active.token_id_yes)
+        book_dn = self.poly_client.fetch_book(active.token_id_no)
+        ask_up = float(book_up.get("best_ask") or 0.99)
+        ask_dn = float(book_dn.get("best_ask") or 0.99)
+        if ask_up <= 0 or ask_up >= 1 or ask_dn <= 0 or ask_dn >= 1:
+            return None, None
+        return ask_up, ask_dn
         if self.poly_client is None or self.market_resolver is None:
             return None, -1.0, None, None
         active = self.market_resolver.get_active()

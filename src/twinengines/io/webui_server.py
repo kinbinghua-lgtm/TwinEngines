@@ -674,17 +674,6 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
         gtext = f"ask-p={gap if gap is not None else '--'}；要求 > 0.04；近5s允许1次抖动"
         real.append(c("gap_rule", "市场强化(ask-p)", "pass" if gpass else "fail", gtext))
 
-        real.append(c("ask_rule", "价格", "pass" if ask_ok else "fail" if ask is not None else "unknown", f"当前ask={ask if ask is not None else '--'}；{ask_text}"))
-    required_confirm = safe_float(cw.get('p_confirm_required_sec')) or phase_rule_confirm_sec
-    if not decision_pending and required_confirm is not None and required_confirm > 0:
-        confirm_ok = bool(cw.get('p_confirm_ok'))
-        real.append(c("confirm", "连续概率", "pass" if confirm_ok else "fail", f"要求={int(required_confirm)}s 连续 p>{phase_rule_prob}；当前={best_prob if best_prob is not None else '--'}；ok={confirm_ok}"))
-    if not decision_pending and bool(cw.get('seq_rule_required')):
-        seq_ok = bool(cw.get('seq_rule_ok'))
-        real.append(c("seq_rule", "序列一致性", "pass" if seq_ok else "fail", f"要求：{cw.get('seq_rule_window','--')} 两位一致；当前={cw.get('seq_rule_a','--')} vs {cw.get('seq_rule_b','--')}；ok={seq_ok}"))
-    if not decision_pending and phase_num is not None:
-        net_ev = friction_adjusted_ev if friction_adjusted_ev is not None else (best_prob / (ask * 1.005) - 1.0 if best_prob is not None and ask is not None and ask > 0 else None)
-        real.append(c("ev", "扣摩擦后EV", "pass" if net_ev is not None and net_ev > phase_rule_ev else "fail" if net_ev is not None else "unknown", f"当前={round(net_ev, 6) if net_ev is not None else '--'}；要求 > {phase_rule_ev}；原始EV={ev if ev is not None else '--'}；摩擦系数={cw.get('friction_multiplier', 1.005)}"))
     if not decision_pending and bool(cw.get("has_same_position")) and bool(cw.get("has_opposite_position")):
         real.append(c("hedged_lock", "双边锁定", "fail", "已双边持仓，禁止继续加仓"))
     if not decision_pending and intent_allowed is True:
