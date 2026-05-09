@@ -512,11 +512,11 @@ def _phase_box_condition_subset(phase_num, all_conditions):
 
 def _phase_boxes_for_decision(phase_num, conditions):
     titles = {
-        0: "统一门槛：p>0.5 & ask<0.8 & (ask-p)>0.04 (近5点允许1次抖动)",
-        1: "统一门槛：p>0.5 & ask<0.8 & (ask-p)>0.04 (近5点允许1次抖动)",
-        2: "统一门槛：p>0.5 & ask<0.8 & (ask-p)>0.04 (近5点允许1次抖动)",
-        3: "统一门槛：p>0.5 & ask<0.8 & (ask-p)>0.04 (近5点允许1次抖动)",
-        4: "统一门槛：p>0.5 & ask<0.8 & (ask-p)>0.04 (近5点允许1次抖动)",
+        0: "统一门槛：p>0.5 & ask<0.8 & (ask-p)>0.02 (近10点允许2次抖动)",
+        1: "统一门槛：p>0.5 & ask<0.8 & (ask-p)>0.02 (近10点允许2次抖动)",
+        2: "统一门槛：p>0.5 & ask<0.8 & (ask-p)>0.02 (近10点允许2次抖动)",
+        3: "统一门槛：p>0.5 & ask<0.8 & (ask-p)>0.02 (近10点允许2次抖动)",
+        4: "统一门槛：p>0.5 & ask<0.8 & (ask-p)>0.02 (近10点允许2次抖动)",
     }
     boxes = []
     current = phase_num if isinstance(phase_num, int) and 0 <= phase_num <= 4 else None
@@ -597,7 +597,7 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
             c("quote", "盘口报价", "pass" if best_ask is not None else "fail", f"side={side.upper() if side else '--'} best_bid={best_bid if best_bid is not None else '--'} best_ask={best_ask if best_ask is not None else '--'}"),
             c("prob", "概率方向", "pass" if confidence is not None and confidence >= 0.51 else "fail" if confidence is not None else "unknown", f"p_up={p_up if p_up is not None else '--'} p_down={p_down if p_down is not None else '--'} confidence={confidence if confidence is not None else '--'} 阈值=0.51"),
             c("ask_rule", "报价上限", "pass" if best_ask is not None and best_ask < 0.8 else "fail" if best_ask is not None else "unknown", f"best_ask={best_ask if best_ask is not None else '--'} < 0.8"),
-            c("gap_rule", "市场强化(ask-p)", "pass" if (edge is not None and edge <= -0.04) else "fail" if edge is not None else "unknown", f"(ask-p)={(-edge) if edge is not None else '--'} > 0.04（naked tick 使用 edge=p-ask 的相反数）"),
+            c("gap_rule", "市场强化(ask-p)", "pass" if (edge is not None and edge <= -0.02) else "fail" if edge is not None else "unknown", f"(ask-p)={(-edge) if edge is not None else '--'} > 0.02（naked tick 使用 edge=p-ask 的相反数）"),
         ]
         return {"ok": True, "window_id": window_id, "window_label": window_label(window_id), "seq": seq, "seq_display": seq_display, "seq_total": seq_total, "prefix": seq, "T_remaining": T, "server_ts_ms": int(time.time() * 1000), "p_up": p_up, "p_down": p_down, "ev_up": edge if best_dir == "up" else None, "ev_down": edge if best_dir == "down" else None, "best_dir": best_dir, "best_dir_label": best_dir.upper() if best_dir else "未确定", "decision_mode": zh_strategy_name("naked-third-digit-live"), "evaluated_direction": best_dir, "evaluated_direction_label": best_dir.upper() if best_dir else "未确定", "evaluated_ask": best_ask, "evaluated_bid": best_bid, "ask_up": best_ask if best_dir == "up" else None, "ask_down": best_ask if best_dir == "down" else None, "bid_up": best_bid if best_dir == "up" else None, "bid_down": best_bid if best_dir == "down" else None, "fair_prob_side": fair, "best_ev": edge, "phase_boxes": _phase_boxes_for_decision(None, real), "real": {"status": real_status, "reason": reason, "target_quote": safe_float(tick.get("target_quote_usdc")), "target_shares": None, "filled_order": None, "conditions": real}, "shadow": {"status": "等待" if action == "waiting_minute3_close" else "同步实盘 tick", "reason": reason, "fill_amount": None, "ev": edge, "equity": sm.get("shadow_equity_usdc"), "conditions": []}, "source": "logs/naked_live_ticks.jsonl"}
     cw = read_json(root / "data_runtime" / "current_window.json") or {}; sm = summary_payload(root); wid = str(cw.get("window_id") or "")
@@ -711,7 +711,7 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
         c("intent", "意图门控", "pass" if intent_allowed is True else "fail" if intent_allowed is False else "unknown", f"{intent_reason}"),
         c("prob", "概率方向", "pass" if best_prob is not None and best_prob > 0.5 else "fail" if best_prob is not None else "unknown", f"p={best_prob if best_prob is not None else '--'} > 0.5"),
         c("ask_rule", "报价上限", "pass" if ask is not None and ask < 0.8 else "fail" if ask is not None else "unknown", f"ask={ask if ask is not None else '--'} < 0.8"),
-        c("gap_rule", "市场强化(ask-p)", "pass" if (cw.get('gap_ok') is True) else "fail" if (cw.get('gap_ok') is False) else "unknown", f"ask-p={cw.get('gap') if cw.get('gap') is not None else '--'} > 0.04 近10点允许2次抖动"),
+        c("gap_rule", "市场强化(ask-p)", "pass" if (cw.get('gap_ok') is True) else "fail" if (cw.get('gap_ok') is False) else "unknown", f"ask-p={cw.get('gap') if cw.get('gap') is not None else '--'} > 0.02 近10点允许2次抖动"),
         c("kelly", "模拟 Kelly 条件", "pass" if fill and fill >= 2.5 else "warn", f"影子 fill={fill if fill is not None else '--'}"),
     ]
     return {"ok": True, "window_id": wid, "window_label": window_label(wid), "seq": seq, "seq_display": seq_display, "seq_total": seq_total, "prefix": seq, "T_remaining": T, "server_ts_ms": int(time.time() * 1000), "p_up": p_up, "p_down": p_down, "ev_up": ev_up, "ev_down": ev_down, "best_dir": best_dir, "best_dir_label": dir_label, "decision_mode": "方向概率", "evaluated_direction": best_dir, "evaluated_direction_label": dir_label, "evaluated_ask": ask, "ask_up": ask_up, "ask_down": ask_down, "best_ev": ev, "phase_boxes": _phase_boxes_for_decision(phase_num, _phase_box_condition_subset(phase_num, real)), "common_conditions": [x for x in real if x.get("key") in {"time", "startup", "book"}], "real": {"status": real_status, "reason": reason, "target_quote": real_target, "target_shares": shares, "filled_order": filled, "conditions": real}, "shadow": {"status": shadow_status, "reason": str(cw.get("reason") or shadow_status), "fill_amount": fill, "ev": ev, "equity": sm.get("shadow_equity_usdc"), "conditions": shadow}, "source": "current_window.json + derived"}
