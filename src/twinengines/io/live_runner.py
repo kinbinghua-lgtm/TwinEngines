@@ -764,6 +764,30 @@ class LiveRunner:
         key = trig[:3] if len(trig) >= 3 else ""
         startup_observe_only = False
         startup_missed_sec = 0.0
+
+        seq_rule_required = phase >= 2
+        seq_rule_ok = True
+        seq_rule_window = ""
+        seq_rule_a = None
+        seq_rule_b = None
+        if seq_rule_required:
+            seq = str(trig or "")
+            sec_in_window = int(elapsed_sec)
+            idx = 0 if phase == 2 else 1 if phase == 3 else 2
+            if len(seq) >= idx + 2 and sec_in_window >= (idx + 2) * 60:
+                seq_rule_window = f"seq[{idx}] vs seq[{idx+1}]"
+                seq_rule_a = seq[idx]
+                seq_rule_b = seq[idx + 1]
+                seq_rule_ok = (seq_rule_a == seq_rule_b)
+            else:
+                seq_rule_window = f"need seq len>={idx+2} and elapsed_sec>={(idx+2)*60}"
+                seq_rule_ok = False
+
+        _SIM_CURRENT["seq_rule_required"] = bool(seq_rule_required)
+        _SIM_CURRENT["seq_rule_ok"] = bool(seq_rule_ok)
+        _SIM_CURRENT["seq_rule_window"] = seq_rule_window
+        _SIM_CURRENT["seq_rule_a"] = seq_rule_a
+        _SIM_CURRENT["seq_rule_b"] = seq_rule_b
         if is_real_mode and window_id.startswith("w"):
             try:
                 window_start_ms = int(window_id[1:])
@@ -783,6 +807,7 @@ class LiveRunner:
             "add_max_ask_exclusive", "high_price_min_ask", "p_rising_required_sec", "p_rising_5s", "p_rising_8s",
             "p_confirm_required_sec", "p_confirm_ok", "p_confirm_threshold",
             "friction_adjusted_ev", "friction_multiplier",
+            "seq_rule_required", "seq_rule_ok", "seq_rule_window", "seq_rule_a", "seq_rule_b",
             "real_status", "real_decision_stage", "real_block_reason", "real_skip_reason",
             "real_target_quote", "real_attempt_quote", "real_kelly_raw_quote", "real_platform_min_quote",
             "real_min_5_shares_quote", "real_min_order_quote", "real_limit_px", "real_window_cap",
@@ -992,6 +1017,18 @@ class LiveRunner:
             reason = str(lifecycle["reason"])
             _SIM_CURRENT["status"] = reason
             _record_decision(0, "rejected", reason, dict(lifecycle.get("meta") or {}))
+            self._write_current_window_snapshot()
+            return
+
+        if seq_rule_required and not seq_rule_ok:
+            _SIM_CURRENT["status"] = "seq_rule_not_met"
+            _record_decision(0, "rejected", "seq_rule_not_met", {
+                "seq_rule_required": True,
+                "seq_rule_ok": False,
+                "seq_rule_window": seq_rule_window,
+                "seq_rule_a": seq_rule_a,
+                "seq_rule_b": seq_rule_b,
+            })
             self._write_current_window_snapshot()
             return
 
@@ -1778,11 +1815,11 @@ class LiveRunner:
     @staticmethod
     def _phase_gate_rule(phase: int) -> tuple[float, int, float]:
         rules = {
-            0: (0.70, 6, 0.20),
-            1: (0.65, 5, 0.20),
-            2: (0.70, 4, 0.20),
-            3: (0.65, 3, 0.20),
-            4: (0.65, 3, 0.20),
+            0: (0.50, 10, 0.20),
+            1: (0.50, 30, 0.20),
+            2: (0.50, 60, 0.20),
+            3: (0.50, 120, 0.20),
+            4: (0.50, 180, 0.20),
         }
         return rules.get(max(0, min(4, int(phase))), rules[4])
 

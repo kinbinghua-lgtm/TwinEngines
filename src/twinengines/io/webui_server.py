@@ -490,14 +490,20 @@ def summary_payload(root: Path) -> dict[str, Any]:
     return {"ok": True, "real_balance_usdc": real_balance, "real_pending_redeem_usdc": None, "real_redeem_ok": None, "shadow_equity_usdc": shadow_equity, "shadow_equity_note": None if shadow_equity is not None else "无影子账户数据"}
 
 def _web_phase_rule(phase_num):
-    rules = {0: (0.60, 6, 0.00), 1: (0.65, 5, 0.02), 2: (0.70, 4, 0.04), 3: (0.65, 3, 0.06), 4: (0.60, 2, 0.08)}
+    rules = {
+        0: (0.50, 10, 0.20),
+        1: (0.50, 30, 0.20),
+        2: (0.50, 60, 0.20),
+        3: (0.50, 120, 0.20),
+        4: (0.50, 180, 0.20),
+    }
     if not isinstance(phase_num, int):
-        return (0.60, 2, 0.08)
+        return rules[4]
     return rules.get(max(0, min(4, phase_num)), rules[4])
 
 
 def _phase_box_condition_subset(phase_num, all_conditions):
-    keys_by_phase = {0: {"intent", "prob", "ask_rule", "confirm", "ev"}, 1: {"intent", "prob", "ask_rule", "confirm", "ev"}, 2: {"intent", "prob", "ask_rule", "confirm", "ev"}, 3: {"intent", "prob", "ask_rule", "confirm", "ev"}, 4: {"intent", "prob", "ask_rule", "confirm", "ev"}}
+    keys_by_phase = {0: {"intent", "prob", "ask_rule", "confirm", "ev"}, 1: {"intent", "prob", "ask_rule", "confirm", "ev"}, 2: {"intent", "prob", "ask_rule", "confirm", "seq_rule", "ev"}, 3: {"intent", "prob", "ask_rule", "confirm", "seq_rule", "ev"}, 4: {"intent", "prob", "ask_rule", "confirm", "seq_rule", "ev"}}
     if not isinstance(phase_num, int):
         return []
     keys = keys_by_phase.get(phase_num, set())
@@ -506,11 +512,11 @@ def _phase_box_condition_subset(phase_num, all_conditions):
 
 def _phase_boxes_for_decision(phase_num, conditions):
     titles = {
-        0: "p>0.60×6s / 净EV>0.00",
-        1: "p>0.65×5s / 净EV>0.02",
-        2: "p>0.70×4s / 净EV>0.04",
-        3: "p>0.65×3s / 净EV>0.06",
-        4: "p>0.60×2s / 净EV>0.08",
+        0: "p>0.50×10s / 净EV>0.20",
+        1: "p>0.50×30s / 净EV>0.20",
+        2: "p>0.50×60s / 净EV>0.20 + 序列两分钟一致",
+        3: "p>0.50×120s / 净EV>0.20 + 序列两分钟一致",
+        4: "p>0.50×180s / 净EV>0.20 + 序列两分钟一致",
     }
     boxes = []
     current = phase_num if isinstance(phase_num, int) and 0 <= phase_num <= 4 else None
@@ -675,6 +681,9 @@ def current_decision_payload(root: Path) -> dict[str, Any]:
     if not decision_pending and required_confirm is not None and required_confirm > 0:
         confirm_ok = bool(cw.get('p_confirm_ok'))
         real.append(c("confirm", "连续概率", "pass" if confirm_ok else "fail", f"要求={int(required_confirm)}s 连续 p>{phase_rule_prob}；当前={best_prob if best_prob is not None else '--'}；ok={confirm_ok}"))
+    if not decision_pending and bool(cw.get('seq_rule_required')):
+        seq_ok = bool(cw.get('seq_rule_ok'))
+        real.append(c("seq_rule", "序列一致性", "pass" if seq_ok else "fail", f"要求：{cw.get('seq_rule_window','--')} 两位一致；当前={cw.get('seq_rule_a','--')} vs {cw.get('seq_rule_b','--')}；ok={seq_ok}"))
     if not decision_pending and phase_num is not None:
         net_ev = friction_adjusted_ev if friction_adjusted_ev is not None else (best_prob / (ask * 1.005) - 1.0 if best_prob is not None and ask is not None and ask > 0 else None)
         real.append(c("ev", "扣摩擦后EV", "pass" if net_ev is not None and net_ev > phase_rule_ev else "fail" if net_ev is not None else "unknown", f"当前={round(net_ev, 6) if net_ev is not None else '--'}；要求 > {phase_rule_ev}；原始EV={ev if ev is not None else '--'}；摩擦系数={cw.get('friction_multiplier', 1.005)}"))
