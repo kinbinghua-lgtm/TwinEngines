@@ -512,11 +512,11 @@ def _phase_box_condition_subset(phase_num, all_conditions):
 
 def _phase_boxes_for_decision(phase_num, conditions):
     titles = {
-        0: "p>0.50×10s / 净EV>0.20",
-        1: "p>0.50×20s / 净EV>0.20",
-        2: "p>0.50×30s / 净EV>0.20 + 序列两分钟一致",
-        3: "p>0.50×60s / 净EV>0.20 + 序列两分钟一致",
-        4: "p>0.50×120s / 净EV>0.20 + 序列两分钟一致",
+        0: "统一门槛：p>0.5 & ask<0.8 & (ask-p)>0.04 (近5点允许1次抖动)",
+        1: "统一门槛：p>0.5 & ask<0.8 & (ask-p)>0.04 (近5点允许1次抖动)",
+        2: "统一门槛：p>0.5 & ask<0.8 & (ask-p)>0.04 (近5点允许1次抖动)",
+        3: "统一门槛：p>0.5 & ask<0.8 & (ask-p)>0.04 (近5点允许1次抖动)",
+        4: "统一门槛：p>0.5 & ask<0.8 & (ask-p)>0.04 (近5点允许1次抖动)",
     }
     boxes = []
     current = phase_num if isinstance(phase_num, int) and 0 <= phase_num <= 4 else None
